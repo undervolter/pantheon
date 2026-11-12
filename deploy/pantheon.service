@@ -1,0 +1,23 @@
+[Unit]
+Description=Pantheon OLX Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pantheon
+Group=pantheon
+WorkingDirectory=/opt/pantheon
+ExecStart=/opt/pantheon/pantheon
+Restart=always
+RestartSec=3
+
+# Бот сохраняет seen_ids.txt и читает config.json в рабочей директории.
+ReadWritePaths=/opt/pantheon
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

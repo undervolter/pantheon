@@ -1,0 +1,42 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+olx_checker_linux
+
+# Local cache & tokens
+seen_ids.txt
+tokens.json
+
+# Reseller detector state (contains local titles/descriptions)
+reseller_log.jsonl
+seller_stats.json
+seller_templates.json
+seller_templates.json.tmp
+seller_stats.json.tmp
+reseller_log.jsonl.tmp
+
+# Self-updater state and release artifacts
+update_state.json
+update_state.json.tmp
+*.prev
+*.failed
+update_ed25519.key
+update_ed25519.pub
+dist/
+
+# Heavy APK / XAPK files (decompiled assets are stored separately)
+*.apk
+*.xapk
+*.zip
+
+# OS / Editor artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
+
+# Local config with secrets
+config.json
