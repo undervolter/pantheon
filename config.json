@@ -1,20 +1,12 @@
 {
-  "telegram_bot_token": "9240018308:AAFB5LyWZOwkG8cbKz45ejuxvpexUYIOIeg",
+  "telegram_bot_token": "your_tgbot_api",
   "telegram_chat_ids": [
-    "8357976630"
+    "your_chat_id"
   ],
   "interval_seconds": 10,
   "notify_on_startup": false,
   "searches": [
-    {
-      "name": "Електроніка",
-      "query": "",
-      "city_name": "Вся Украина",
-      "category_id": 37,
-      "category_name": "Електроніка",
-      "created_at": 1794455284,
-      "owner_chat_id": "8357976630"
-    }
+
   ],
   "concurrency": 4,
   "send_photos": true,
