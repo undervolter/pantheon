@@ -33,7 +33,7 @@ High-performance OLX listing parser & sniper managed via Telegram bot.
 
 Most similar bots rely on Python + BeautifulSoup (BS4). The downside is obvious — the moment OLX tweaks its website layout, scraping breaks instantly, not to mention frequent 403 Forbidden / 429 Too Many Requests errors from Cloudflare.
 
-**pantheon utilizes the private OLX mobile API, completely avoiding web layout breakages.**
+**pantheon uses the OLX mobile API, completely avoiding web layout breakages.**
 Additionally, the bot natively supports multiple users at the same time and provides a granular filter ownership system.
 
 </details>
