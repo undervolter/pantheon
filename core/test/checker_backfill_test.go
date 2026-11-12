@@ -86,3 +86,23 @@ func TestAlertStartupGrace(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckerBackfillDisabledSetting(t *testing.T) {
+	cfg := &config.Config{
+		DisableBackfill: true,
+	}
+	chk := checker.NewChecker(cfg, nil, nil)
+	defer chk.Close()
+
+	if !chk.IsBackfillDisabled() {
+		t.Error("expected IsBackfillDisabled to be true")
+	}
+
+	cfgDefault := &config.Config{}
+	chkDefault := checker.NewChecker(cfgDefault, nil, nil)
+	defer chkDefault.Close()
+
+	if chkDefault.IsBackfillDisabled() {
+		t.Error("expected IsBackfillDisabled to be false by default")
+	}
+}

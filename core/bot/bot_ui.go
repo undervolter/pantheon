@@ -96,13 +96,13 @@ func (ui *BotUI) RenderMainMenu(chatID string) (string, *InlineKeyboardMarkup) {
 		}
 	}
 
-	statusText := "⏸ Нет активных фильтров — добавь первый"
+	statusText := "⏸ Нет активных фильтров"
 	if ownActive > 0 {
 		statusText = "🟢 В работе"
 	}
 
 	text := fmt.Sprintf(
-		"⠀⠀           ⠀       ⠀<b>p a n t h e o n | Парсер OLX</b> <i>v"+version.AppVersion+"</i>\n"+
+		"⠀⠀           ⠀       ⠀<b>p a n t h e o n | Парсер OLX</b> "+
 			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
 			"📊 <b>Статус:</b> %s\n"+
 			"🎯 <b>Твоих фильтров:</b> %d из %d\n"+
@@ -179,7 +179,7 @@ func (ui *BotUI) RenderFiltersList(chatID string) (string, *InlineKeyboardMarkup
 
 	if shown == 0 {
 		text := "📋 <b>У тебя пока нет своих фильтров.</b>\n\n" +
-			"Нажми кнопку ниже, чтобы создать первый. Уведомления по нему будет получать только этот чат:"
+			"Нажми кнопку ниже, чтобы создать свой фильтр. Уведомления по нему будет получать только этот чат:"
 		km := markup(
 			row(btn("➕ Добавить фильтр", "add_start")),
 			row(btn("⬅️ Главное меню", "menu_main")),
@@ -1049,35 +1049,31 @@ func (ui *BotUI) RenderConfirmStep(draft config.SearchConfig) (string, *InlineKe
 	return text, km
 }
 
-// 10. Настройки
+// 10. Настройки — главный дашборд (Вариант А)
 func (ui *BotUI) RenderSettings() (string, *InlineKeyboardMarkup) {
 	stats := ui.checker.GetStats()
 
 	sendPhotos := ui.cfg.GetSendPhotos()
 	maxPhotos := ui.cfg.GetMaxPhotos()
-	photoMode := "выключены"
+	photoMode := "ВЫКЛ"
 	if sendPhotos {
-		photoMode = fmt.Sprintf("включены (до %d фото)", maxPhotos)
+		photoMode = fmt.Sprintf("ВКЛ (%d)", maxPhotos)
 	}
 
 	skipBumped := ui.cfg.GetSkipBumpedOld()
-	bumpedMode := "по дате создания (поднятые старые скрываются)"
-	if !skipBumped {
-		bumpedMode = "по дате обновления (поднятые старые приходят)"
-	}
+	bumpedMode := enabledDisabled(skipBumped)
 
 	maxAge := ui.cfg.GetMaxAlertAgeMin()
-	ageMode := "без ограничений"
+	ageMode := "без лимита"
 	if maxAge > 0 {
 		ageMode = fmt.Sprintf("%d мин", maxAge)
 	}
 
 	showParams := ui.cfg.GetShowParams()
-	maxParams := ui.cfg.GetMaxParams()
-	paramsMode := "выключены"
-	if showParams {
-		paramsMode = fmt.Sprintf("включены (до %d)", maxParams)
-	}
+	paramsMode := enabledDisabled(showParams)
+
+	backfillEnabled := ui.cfg.GetBackfillEnabled()
+	backfillMode := enabledDisabled(backfillEnabled)
 
 	_, fetchLimit := ui.cfg.PerfSettings()
 	chatCount := len(ui.cfg.GetTelegramChatIDs())
@@ -1085,16 +1081,97 @@ func (ui *BotUI) RenderSettings() (string, *InlineKeyboardMarkup) {
 	text := fmt.Sprintf(
 		"⚙️ <b>Настройки системы</b>\n"+
 			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-			"⏱ <b>Интервал проверки:</b> %d сек.\n"+
-			"📦 <b>Лотов за цикл:</b> %d\n"+
-			"📤 <b>Получатели алертов:</b> %d\n"+
-			"📷 <b>Фото в алертах:</b> %s\n"+
-			"♻️ <b>Новизна лота:</b> %s\n"+
-			"⏳ <b>Макс. возраст лота:</b> %s\n"+
-			"📋 <b>Характеристики:</b> %s\n"+
+			"⏱️ <b>Интервал проверки:</b> %d сек.\n"+
+			"↕️ <b>Догрузка обьявлений:</b> %s\n"+
+			"♻️ <b>Отображать только новые:</b> %s\n"+
+			"📋 <b>Отображение характеристик:</b> %s\n"+
+			"⏳ <b>Возраст:</b> %s\n"+
+			"👥 <b>Получателей:</b> %d\n"+
+			"📷 <b>Фото:</b> %s\n"+
+			"📦 <b>Кол-во обьявлений за запрос:</b> %d\n"+
 			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-			"<i>Pantheon Open-Core Edition v%s</i>",
-		stats.Interval, fetchLimit, chatCount, photoMode, bumpedMode, ageMode, paramsMode, version.AppVersion,
+			"<i>⠀⠀           ⠀       ⠀<b>powered by pantheon v%s</b></i>",
+		stats.Interval, backfillMode, bumpedMode, paramsMode, ageMode, chatCount, photoMode, fetchLimit, version.AppVersion,
+	)
+
+	km := markup(
+		row(btn("⚡ Скорость и парсер", "settings_speed")),
+		row(btn("🔔 Оформление и фильтры", "settings_alerts")),
+		row(btn("👥 Чаты и доступ", "settings_chats")),
+		row(btn("⬅️ Главное меню", "menu_main")),
+	)
+
+	return text, km
+}
+
+func (ui *BotUI) RenderSettingsSpeed() (string, *InlineKeyboardMarkup) {
+	stats := ui.checker.GetStats()
+	_, fetchLimit := ui.cfg.PerfSettings()
+	backfillEnabled := ui.cfg.GetBackfillEnabled()
+	backfillMode := onOff(backfillEnabled)
+
+	text := fmt.Sprintf(
+		"⚡ <b>Скорость и парсер</b>\n"+
+			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+			"⏱ <b>Интервал проверки:</b> %d сек.\n"+
+			"📦 <b>Лотов за цикл (выдача):</b> %d\n"+
+			"↕️ <b>Догрузка страниц (backfill):</b> %s\n"+
+			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+			"<i>Нажмите кнопку для изменения параметра:</i>",
+		stats.Interval, fetchLimit, backfillMode,
+	)
+
+	fetchBtn := fmt.Sprintf("📦 Выдача: %d", fetchLimit)
+	backfillBtn := fmt.Sprintf("↕️ Догрузка: %s", backfillMode)
+
+	km := markup(
+		row(btn("⏱ 5 сек", "set_interval:5"), btn("⏱ 10 сек", "set_interval:10")),
+		row(btn("⏱ 15 сек", "set_interval:15"), btn("⏱ 30 сек", "set_interval:30")),
+		row(btn(fetchBtn, "cycle_fetch_limit"), btn(backfillBtn, "toggle_backfill")),
+		row(btn("⚡ Проверить сейчас", "check_now")),
+		row(btn("⬅️ Назад в настройки", "menu_settings")),
+	)
+
+	return text, km
+}
+
+func (ui *BotUI) RenderSettingsAlerts() (string, *InlineKeyboardMarkup) {
+	sendPhotos := ui.cfg.GetSendPhotos()
+	maxPhotos := ui.cfg.GetMaxPhotos()
+	skipBumped := ui.cfg.GetSkipBumpedOld()
+	maxAge := ui.cfg.GetMaxAlertAgeMin()
+	showParams := ui.cfg.GetShowParams()
+
+	photoMode := "выключены"
+	if sendPhotos {
+		photoMode = fmt.Sprintf("включены (до %d фото)", maxPhotos)
+	}
+
+	bumpedMode := "включено (поднятые старые скрываются)"
+	if !skipBumped {
+		bumpedMode = "выключено (приходят и поднятые старые)"
+	}
+
+	ageMode := "без ограничений"
+	if maxAge > 0 {
+		ageMode = fmt.Sprintf("не старше %d мин", maxAge)
+	}
+
+	paramsMode := "выключены"
+	if showParams {
+		paramsMode = "включены (все)"
+	}
+
+	text := fmt.Sprintf(
+		"🔔 <b>Оформление и фильтры алертов</b>\n"+
+			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+			"📷 <b>Фото в алертах:</b> %s\n"+
+			"📋 <b>Характеристики:</b> %s\n"+
+			"♻️ <b>Только новые:</b> %s\n"+
+			"⏳ <b>Макс. возраст:</b> %s\n"+
+			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+			"<i>Нажмите кнопку для изменения параметра:</i>",
+		photoMode, paramsMode, bumpedMode, ageMode,
 	)
 
 	photoBtn := "📷 Фото: ВЫКЛ"
@@ -1102,10 +1179,7 @@ func (ui *BotUI) RenderSettings() (string, *InlineKeyboardMarkup) {
 		photoBtn = fmt.Sprintf("📷 Фото: ВКЛ (%d)", maxPhotos)
 	}
 
-	bumpedBtn := "♻️ Скрывать поднятые старые: ВКЛ"
-	if !skipBumped {
-		bumpedBtn = "♻️ Скрывать поднятые старые: ВЫКЛ"
-	}
+	bumpedBtn := fmt.Sprintf("♻️ Только новые: %s", onOff(skipBumped))
 
 	ageBtn := "⏳ Возраст лота: без лимита"
 	if maxAge > 0 {
@@ -1114,24 +1188,39 @@ func (ui *BotUI) RenderSettings() (string, *InlineKeyboardMarkup) {
 
 	paramsBtn := "📋 Характеристики: ВЫКЛ"
 	if showParams {
-		paramsBtn = fmt.Sprintf("📋 Характеристики: ВКЛ (%d)", maxParams)
+		paramsBtn = "📋 Характеристики: ВКЛ"
 	}
 
-	fetchBtn := fmt.Sprintf("📦 Выдача: %d", fetchLimit)
-
 	km := markup(
-		row(btn("⏱ 5 сек", "set_interval:5"), btn("⏱ 10 сек", "set_interval:10")),
-		row(btn("⏱ 15 сек", "set_interval:15"), btn("⏱ 30 сек", "set_interval:30")),
-		row(btn("⚡ Проверить сейчас", "check_now")),
-		row(btn(fetchBtn, "cycle_fetch_limit")),
-		row(btn("🆔 chat_id", "show_chatid"), btn("📤 Получатели", "list_chats")),
-		row(btn("✅ Привязать этот чат", "bind_current")),
 		row(btn(photoBtn, "toggle_photos")),
-		row(btn("📷 1", "set_photos:1"), btn("📷 3", "set_photos:3"), btn("📷 5", "set_photos:5")),
+		row(btn("📷 1", "set_photos:1"), btn("📷 3", "set_photos:3"), btn("📷 5", "set_photos:5"), btn("📷 10", "set_photos:10")),
+		row(btn(paramsBtn, "toggle_params")),
 		row(btn(bumpedBtn, "toggle_skip_bumped")),
 		row(btn(ageBtn, "cycle_alert_age")),
-		row(btn(paramsBtn, "toggle_params")),
-		row(btn("⬅️ Главное меню", "menu_main")),
+		row(btn("⬅️ Назад в настройки", "menu_settings")),
+	)
+
+	return text, km
+}
+
+func (ui *BotUI) RenderSettingsChats(chatID string) (string, *InlineKeyboardMarkup) {
+	chatCount := len(ui.cfg.GetTelegramChatIDs())
+
+	text := fmt.Sprintf(
+		"👥 <b>Чаты и доступ</b>\n"+
+			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+			"📤 <b>Получателей алертов:</b> %d\n"+
+			"🆔 <b>Ваш текущий chat_id:</b> <code>%s</code>\n"+
+			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+			"<i>Управление получателями уведомлений:</i>",
+		chatCount, chatID,
+	)
+
+	km := markup(
+		row(btn("✅ Привязать этот чат", "bind_current")),
+		row(btn("📤 Список получателей", "list_chats")),
+		row(btn("🆔 Мой chat_id", "show_chatid")),
+		row(btn("⬅️ Назад в настройки", "menu_settings")),
 	)
 
 	return text, km
@@ -1249,4 +1338,11 @@ func parsePriceRange(raw string) (min, max float64, ok bool) {
 		return 0, nums[0], true
 	}
 	return nums[0], nums[1], true
+}
+
+func enabledDisabled(v bool) string {
+	if v {
+		return "включено"
+	}
+	return "выключено"
 }

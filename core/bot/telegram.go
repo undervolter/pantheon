@@ -193,7 +193,7 @@ func (t *TelegramNotifier) NotifyNewOffer(offer olx.Offer, filterName, ownerChat
 	}
 
 	showParams := true
-	maxParams := 15
+	maxParams := 0
 	if t.cfg != nil {
 		showParams = t.cfg.GetShowParams()
 		maxParams = t.cfg.GetMaxParams()
@@ -328,7 +328,7 @@ func (t *TelegramNotifier) NotifyNewOffer(offer olx.Offer, filterName, ownerChat
 
 func (t *TelegramNotifier) SetupBotMenu() error {
 	commands := []map[string]string{
-		{"command": "start", "description": "🎮 Открыть пульт Pantheon"},
+		{"command": "start", "description": "Открыть главное меню"},
 	}
 
 	_ = t.postTelegramJSON("setMyCommands", map[string]interface{}{
@@ -349,7 +349,6 @@ func (t *TelegramNotifier) StartPolling(checker *checker.Checker) {
 	}
 
 	_ = t.SetupBotMenu()
-	fmt.Println("🤖 Интерактивный Telegram-пульт управления (кнопки) запущен...")
 
 	// Сразу показываем инлайн-меню во всех привязанных чатах,
 	// чтобы не искать /start после каждого запуска.
@@ -1314,6 +1313,18 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 		text, km := t.ui.RenderSettings()
 		_ = t.editMessageText(chatID, msgID, text, km)
 
+	case data == "settings_speed":
+		text, km := t.ui.RenderSettingsSpeed()
+		_ = t.editMessageText(chatID, msgID, text, km)
+
+	case data == "settings_alerts":
+		text, km := t.ui.RenderSettingsAlerts()
+		_ = t.editMessageText(chatID, msgID, text, km)
+
+	case data == "settings_chats":
+		text, km := t.ui.RenderSettingsChats(chatID)
+		_ = t.editMessageText(chatID, msgID, text, km)
+
 	case data == "check_now":
 		go t.ui.checker.CheckNow()
 		answerToast("⚡ Внеочередная проверка запущена")
@@ -1329,7 +1340,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 		} else {
 			answerToast("📷 Фото выключены: только текст")
 		}
-		text, km := t.ui.RenderSettings()
+		text, km := t.ui.RenderSettingsAlerts()
 		_ = t.editMessageText(chatID, msgID, text, km)
 
 	case data == "toggle_skip_bumped":
@@ -1339,11 +1350,11 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 			break
 		}
 		if newState {
-			answerToast("♻️ Пропуск старых поднятых лотов")
+			answerToast("♻️ Только новые лоты: ВКЛ")
 		} else {
-			answerToast("♻️ Поднятые старые лоты будут приходить")
+			answerToast("♻️ Только новые лоты: ВЫКЛ")
 		}
-		text, km := t.ui.RenderSettings()
+		text, km := t.ui.RenderSettingsAlerts()
 		_ = t.editMessageText(chatID, msgID, text, km)
 
 	case data == "cycle_alert_age":
@@ -1365,7 +1376,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 		} else {
 			answerToast(fmt.Sprintf("⏳ Лоты не старше %d мин", next))
 		}
-		text, km := t.ui.RenderSettings()
+		text, km := t.ui.RenderSettingsAlerts()
 		_ = t.editMessageText(chatID, msgID, text, km)
 
 	case data == "toggle_params":
@@ -1375,11 +1386,25 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 			break
 		}
 		if newState {
-			answerToast(fmt.Sprintf("📋 Характеристики: до %d полей", t.cfg.GetMaxParams()))
+			answerToast("📋 Характеристики: ВКЛ")
 		} else {
-			answerToast("📋 Характеристики выключены")
+			answerToast("📋 Характеристики: ВЫКЛ")
 		}
-		text, km := t.ui.RenderSettings()
+		text, km := t.ui.RenderSettingsAlerts()
+		_ = t.editMessageText(chatID, msgID, text, km)
+
+	case data == "toggle_backfill":
+		newState := !t.cfg.GetBackfillEnabled()
+		if err := t.cfg.SetBackfillEnabled(newState); err != nil {
+			answerAlert(fmt.Sprintf("❌ Ошибка: %v", err))
+			break
+		}
+		if newState {
+			answerToast("↕️ Догрузка страниц при переполнении ВКЛ")
+		} else {
+			answerToast("↕️ Догрузка страниц ВЫКЛ")
+		}
+		text, km := t.ui.RenderSettingsSpeed()
 		_ = t.editMessageText(chatID, msgID, text, km)
 
 	case data == "cycle_fetch_limit":
@@ -1397,7 +1422,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 			break
 		}
 		answerToast(fmt.Sprintf("📦 Лотов за цикл: %d", next))
-		text, km := t.ui.RenderSettings()
+		text, km := t.ui.RenderSettingsSpeed()
 		_ = t.editMessageText(chatID, msgID, text, km)
 
 	case strings.HasPrefix(data, "filters_open:"):
@@ -1590,6 +1615,8 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 		} else {
 			answerToast("Этот чат уже в списке получателей")
 		}
+		text, km := t.ui.RenderSettingsChats(chatID)
+		_ = t.editMessageText(chatID, msgID, text, km)
 
 	case strings.HasPrefix(data, "set_photos:"):
 		n, _ := strconv.Atoi(strings.TrimPrefix(data, "set_photos:"))
@@ -1598,14 +1625,14 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 			_ = t.cfg.SetSendPhotos(true)
 			answerToast(fmt.Sprintf("📷 Фото: до %d шт.", n))
 		}
-		text, km := t.ui.RenderSettings()
+		text, km := t.ui.RenderSettingsAlerts()
 		_ = t.editMessageText(chatID, msgID, text, km)
 
 	case strings.HasPrefix(data, "set_interval:"):
 		sec, _ := strconv.Atoi(strings.TrimPrefix(data, "set_interval:"))
 		_ = t.cfg.SetInterval(sec)
 		answerToast(fmt.Sprintf("⏱️ Интервал: %d сек", sec))
-		text, km := t.ui.RenderSettings()
+		text, km := t.ui.RenderSettingsSpeed()
 		_ = t.editMessageText(chatID, msgID, text, km)
 	}
 }

@@ -1,8 +1,6 @@
 package checker
 
 import (
-	"pantheon/core/config"
-	"pantheon/core/olx"
 	"bufio"
 	"fmt"
 	"os"
@@ -10,6 +8,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"pantheon/core/config"
+	"pantheon/core/olx"
+	"pantheon/core/version"
 )
 
 
@@ -83,7 +85,6 @@ func (c *Checker) loadSeenIDs() {
 			c.SeenIDs[line] = true
 		}
 	}
-	fmt.Printf("[Cache] Загружено %d записей о просмотренных лотах из %s\n", len(c.SeenIDs), c.seenFile)
 }
 
 func seenKey(id int64, ownerChatID string) string {
@@ -145,29 +146,29 @@ func (c *Checker) logAdSkipped(offer olx.Offer, reason, details string) {
 }
 
 func (c *Checker) logAdFound(offer olx.Offer, filterName string) {
-	line := fmt.Sprintf("[%s] found new ad! id %d | created at: %s | updated at: %s | price: %s | phone: %s | [%s]",
-		time.Now().Format("15:04:05"),
+	fmt.Println(c.FormatAdFound(time.Now(), offer, filterName))
+}
+
+func (c *Checker) FormatAdFound(now time.Time, offer olx.Offer, filterName string) string {
+	line := fmt.Sprintf("[%s] found new ad! id %d | created at: %s | updated at: %s | price: %s | [%s]",
+		now.Format("15:04:05"),
 		offer.ID,
 		offerCreatedAtLabel(offer, true),
 		offerUpdatedAtLabel(offer, true),
 		olx.SanitizeListingText(offer.GetPrice()),
-		offerPhoneLabel(offer),
 		olx.SanitizeListingText(filterName),
 	)
-	if title := olx.SanitizeListingText(offer.Title); title != "" {
-		line += " | " + title
-	}
 	if offer.URL != "" {
 		line += " | " + c.hyperlinkLabel(offer.URL, "link")
 	}
-	fmt.Println(line)
+	return line
 }
 
 func (c *Checker) hyperlinkLabel(url, label string) string {
 	if url == "" {
 		return ""
 	}
-	if c.cfg == nil || !c.cfg.GetANSIHyperlinks() || !hyperlinksAllowed() {
+	if (c.cfg != nil && !c.cfg.GetANSIHyperlinks()) || !hyperlinksAllowed() {
 		return url
 	}
 	return osc8Hyperlink(url, label)
@@ -218,13 +219,6 @@ func offerUpdatedAtLabel(o olx.Offer, withSeconds bool) string {
 		return t.Format("02.01.2006 15:04:05")
 	}
 	return t.Format("02.01.2006 15:04")
-}
-
-func offerPhoneLabel(o olx.Offer) string {
-	if o.Contact.Phone {
-		return "yes"
-	}
-	return "no"
 }
 
 func topAdDetail(o olx.Offer) string {
@@ -278,9 +272,14 @@ func (c *Checker) GetStats() CheckerStats {
 		}
 	}
 
+	var sentCount int64
+	if c.notifier != nil {
+		sentCount = c.notifier.GetSentCount()
+	}
+
 	return CheckerStats{
 		SeenCount:      seenCount,
-		SentCount:      c.notifier.GetSentCount(),
+		SentCount:      sentCount,
 		ActiveSearches: activeCount,
 		TotalSearches:  len(searches),
 		Interval:       c.cfg.GetInterval(),
@@ -289,13 +288,33 @@ func (c *Checker) GetStats() CheckerStats {
 }
 
 func (c *Checker) GetSentCount() int64 {
+	if c.notifier == nil {
+		return 0
+	}
 	return c.notifier.GetSentCount()
 }
 
-func (c *Checker) Start() {
+func (c *Checker) FormatStartMessage() string {
 	active := c.cfg.GetActiveSearches()
-	fmt.Printf("🚀 Монитор OLX запущен в %s. Активных задач: %d (всего: %d). Интервал: %d сек.\n\n",
-		c.startedAt.Format("15:04:05 02.01.2006"), len(active), len(c.cfg.GetSearches()), c.cfg.GetInterval())
+	return fmt.Sprintf("Started pantheon v%s at %s, active filters: %d, interval - %ds",
+		version.AppVersion, c.startedAt.Format("15:04:05 02.01.2006"), len(active), c.cfg.GetInterval())
+}
+
+const Banner = `                                __     __                            
+    ____     ____ _   ____     / /_   / /_     ___     ____     ____ 
+   / __ \   / __ ` + "`" + `/  / __ \   / __/  / __ \   / _ \   / __ \   / __ \
+  / /_/ /  / /_/ /  / / / /  / /_   / / / /  /  __/  / /_/ /  / / / /
+ / .___/   \__,_/  /_/ /_/   \__/  /_/ /_/   \___/   \____/  /_/ /_/ 
+/_/                                                                  
+
+  made by undervolter | github.com/undervolter/pantheon
+      Want some updates? t.me/pantheonUpdates`
+
+func (c *Checker) Start() {
+	fmt.Println(Banner)
+	fmt.Println()
+	fmt.Println(c.FormatStartMessage())
+	fmt.Printf("[Cache] Загружено %d записей о просмотренных лотах из %s\n", len(c.SeenIDs), c.seenFile)
 
 	// Первый прогон (наполняем кэш и отсекаем старые)
 	c.checkAll(true)
@@ -417,7 +436,7 @@ func (c *Checker) fetchOffersWithBackfill(search config.SearchConfig, limit int)
 	}
 
 	newest := pageNewestRefresh(first)
-	if prev.IsZero() || pageReached(first, prev) {
+	if c.isBackfillDisabled() || prev.IsZero() || pageReached(first, prev) {
 		if prev.IsZero() {
 			fmt.Printf("[%s] 📌 '%s': фронт выдачи %s\n",
 				time.Now().Format("15:04:05"), search.Name, newest.Format("15:04:05"))
@@ -602,9 +621,6 @@ func (c *Checker) checkAll(isInitial bool) {
 		if isInitial {
 			fmt.Printf("[%s] Инициализация '%s': проверено %d лотов (новых в кэш: %d)\n",
 				time.Now().Format("15:04:05"), search.Name, len(res.offers), cachedCount)
-		} else if newCount > 0 {
-			fmt.Printf("[%s] Поиск '%s': найдено %d новых объявлений!\n",
-				time.Now().Format("15:04:05"), search.Name, newCount)
 		}
 		if querySkipped > 0 {
 			fmt.Printf("[%s] 🎯 '%s': отсеяно %d лотов — не совпали с запросом\n",
@@ -623,3 +639,12 @@ func PageNewestRefresh(offers []olx.Offer) time.Time { return pageNewestRefresh(
 func PageReached(offers []olx.Offer, prev time.Time) bool { return pageReached(offers, prev) }
 
 func (c *Checker) Client() *olx.OLXClient { return c.client }
+
+func (c *Checker) IsBackfillDisabled() bool { return c.isBackfillDisabled() }
+
+func (c *Checker) isBackfillDisabled() bool {
+	if c.cfg == nil {
+		return false
+	}
+	return !c.cfg.GetBackfillEnabled()
+}

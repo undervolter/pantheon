@@ -73,6 +73,10 @@ type Config struct {
 	// ANSIHyperlinks включает OSC 8-ссылки в консольном логе.
 	ANSIHyperlinks bool `json:"ansi_hyperlinks,omitempty"`
 
+	// Отключение догрузки страниц при переполнении (backfill).
+	DisableBackfill bool  `json:"disable_backfill,omitempty"`
+	Backfill        *bool `json:"backfill,omitempty"`
+
 	mu       sync.RWMutex `json:"-"`
 	filePath string       `json:"-"`
 }
@@ -94,7 +98,10 @@ func LoadConfig(filename string) (*Config, error) {
 	cfg.MaxAlertAgeMin = 20
 	// Характеристики в карточке.
 	cfg.ShowParams = true
-	cfg.MaxParams = 15
+	// 0 = без ограничений (все характеристики)
+	cfg.MaxParams = 0
+	// По умолчанию ANSI/OSC 8 гиперссылки включены.
+	cfg.ANSIHyperlinks = true
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("ошибка парсинга %s: %w", filename, err)
 	}
@@ -444,4 +451,36 @@ func (c *Config) SetMaxPhotos(n int) error {
 	}
 	c.MaxPhotos = n
 	return c.saveLocked()
+}
+
+func (c *Config) GetBackfillEnabled() bool {
+	if c == nil {
+		return true
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.DisableBackfill {
+		return false
+	}
+	if c.Backfill != nil {
+		return *c.Backfill
+	}
+	return true
+}
+
+func (c *Config) SetBackfillEnabled(enabled bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := enabled
+	c.Backfill = &b
+	c.DisableBackfill = !enabled
+	return c.saveLocked()
+}
+
+func (c *Config) GetDisableBackfill() bool {
+	return !c.GetBackfillEnabled()
+}
+
+func (c *Config) SetDisableBackfill(disabled bool) error {
+	return c.SetBackfillEnabled(!disabled)
 }

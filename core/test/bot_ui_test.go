@@ -1,9 +1,11 @@
 package test
 
 import (
+	"strings"
 	"testing"
 
 	"pantheon/core/bot"
+	"pantheon/core/checker"
 	"pantheon/core/config"
 	"pantheon/core/olx"
 )
@@ -170,5 +172,65 @@ func TestRenderDistrictStep(t *testing.T) {
 	}
 	if !foundWhole {
 		t.Error("whole-city button missing")
+	}
+}
+
+func TestRenderSettingsCategories(t *testing.T) {
+	cfg := &config.Config{
+		IntervalSeconds: 15,
+		FetchLimit:      35,
+	}
+	chk := checker.NewChecker(cfg, nil, nil)
+	defer chk.Close()
+	ui := bot.NewBotUI(cfg, chk)
+
+	// 1. Main settings
+	text, km := ui.RenderSettings()
+	if !strings.Contains(text, "Настройки системы") {
+		t.Errorf("expected header in settings text, got: %s", text)
+	}
+	hasSpeed, hasAlerts, hasChats := false, false, false
+	for _, row := range km.InlineKeyboard {
+		for _, b := range row {
+			if b.CallbackData == "settings_speed" {
+				hasSpeed = true
+			}
+			if b.CallbackData == "settings_alerts" {
+				hasAlerts = true
+			}
+			if b.CallbackData == "settings_chats" {
+				hasChats = true
+			}
+		}
+	}
+	if !hasSpeed || !hasAlerts || !hasChats {
+		t.Errorf("missing category buttons: speed=%v, alerts=%v, chats=%v", hasSpeed, hasAlerts, hasChats)
+	}
+
+	// 2. Settings Speed
+	textSpeed, kmSpeed := ui.RenderSettingsSpeed()
+	if !strings.Contains(textSpeed, "Скорость и парсер") {
+		t.Errorf("expected header in speed text, got: %s", textSpeed)
+	}
+	if kmSpeed == nil {
+		t.Fatal("no keyboard in speed")
+	}
+
+	// 3. Settings Alerts
+	textAlerts, kmAlerts := ui.RenderSettingsAlerts()
+	if !strings.Contains(textAlerts, "Оформление и фильтры") {
+		t.Errorf("expected header in alerts text, got: %s", textAlerts)
+	}
+	if kmAlerts == nil {
+		t.Fatal("no keyboard in alerts")
+	}
+
+	// 4. Settings Chats
+	textChats, kmChats := ui.RenderSettingsChats("123456")
+	if !strings.Contains(textChats, "Чаты и доступ") {
+		t.Errorf("expected header in chats text, got: %s", textChats)
+	}
+	if kmChats == nil {
+		t.Fatal("no keyboard in chats")
 	}
 }

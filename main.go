@@ -15,6 +15,8 @@ import (
 )
 
 func main() {
+	initTerminal()
+
 	configPath := flag.String("config", "config.json", "Путь к файлу конфигурации")
 	once := flag.Bool("once", false, "Выполнить один прогон и выйти (для проверки)")
 	tgUI := flag.Bool("tg", true, "Включить Telegram-пульт (управление ботом)")

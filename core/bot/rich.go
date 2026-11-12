@@ -151,7 +151,7 @@ func (t *TelegramNotifier) sendRichOffer(chatID string, offer olx.Offer, filterN
 	}
 
 	showParams := true
-	maxParams := 15
+	maxParams := 0
 	if t.cfg != nil {
 		showParams = t.cfg.GetShowParams()
 		maxParams = t.cfg.GetMaxParams()
