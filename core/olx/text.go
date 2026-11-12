@@ -1,10 +1,31 @@
-package main
+package olx
 
 import (
+	"fmt"
 	"html"
+	"regexp"
 	"strings"
+	"time"
 	"unicode"
 )
+
+var (
+	brTagRegex   = regexp.MustCompile(`(?i)<br\s*/?>`)
+	pTagRegex    = regexp.MustCompile(`(?i)</?p>`)
+	allTagsRegex = regexp.MustCompile(`<[^>]*>`)
+)
+
+// StripHTMLTags удаляет HTML-теги, заменяя br и p на переносы строк.
+func StripHTMLTags(s string) string {
+	s = brTagRegex.ReplaceAllString(s, "\n")
+	s = pTagRegex.ReplaceAllString(s, "\n")
+	s = allTagsRegex.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
+}
+
+func stripHTMLTags(s string) string {
+	return StripHTMLTags(s)
+}
 
 // Невидимые/нулевой ширины символы, которыми обходят фильтры.
 var invisibleTextReplacer = strings.NewReplacer(
@@ -24,22 +45,26 @@ var invisibleTextReplacer = strings.NewReplacer(
 	"\u202e", "",
 )
 
-// sanitizeListingText — для однострочных полей: заголовок, цена, локация.
+// SanitizeListingText — для однострочных полей: заголовок, цена, локация.
 // Убирает невидимые символы, схлопывает все пробелы/переносы в один пробел
 // и склеивает разряженные слова.
-func sanitizeListingText(s string) string {
+func SanitizeListingText(s string) string {
 	s = prepareListingText(s)
 	s = strings.Join(strings.Fields(s), " ")
 	return glueSpacedLetters(s)
 }
 
-// sanitizeListingDescription — для описания. Сохраняет абзацы, но:
+func sanitizeListingText(s string) string {
+	return SanitizeListingText(s)
+}
+
+// SanitizeListingDescription — для описания. Сохраняет абзацы, но:
 //   - убирает ведущие/хвостовые пробелы в каждой строке;
 //   - схлопывает горизонтальные отступы до одного пробела;
 //   - выкидывает пустые строки в начале/конце;
 //   - оставляет максимум одну пустую строку между абзацами;
 //   - склеивает разряженные слова.
-func sanitizeListingDescription(s string) string {
+func SanitizeListingDescription(s string) string {
 	s = prepareListingText(s)
 	if s == "" {
 		return ""
@@ -77,6 +102,10 @@ func sanitizeListingDescription(s string) string {
 	}
 
 	return strings.Join(out, "\n")
+}
+
+func sanitizeListingDescription(s string) string {
+	return SanitizeListingDescription(s)
 }
 
 func prepareListingText(s string) string {
@@ -150,8 +179,8 @@ func isSingleLetterToken(s string) bool {
 	return len(r) == 1 && unicode.IsLetter(r[0])
 }
 
-// isLikelySpamTitle отсекает заголовки-пустышки после нормализации.
-func isLikelySpamTitle(title string) bool {
+// IsLikelySpamTitle отсекает заголовки-пустышки после нормализации.
+func IsLikelySpamTitle(title string) bool {
 	t := strings.ToLower(strings.TrimSpace(title))
 	t = strings.NewReplacer("’", "'", "‘", "'", "`", "'").Replace(t)
 	t = strings.Trim(t, " .,!?;:-—–_\"'()[]{}")
@@ -166,4 +195,28 @@ func isLikelySpamTitle(title string) bool {
 		return true
 	}
 	return false
+}
+
+func isLikelySpamTitle(title string) bool {
+	return IsLikelySpamTitle(title)
+}
+
+// FormatModerationDelay форматирует задержку модерации/возраст лота.
+func FormatModerationDelay(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%d сек", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%d мин", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%d ч %d мин", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// TruncateRunes обрезает строку до n рун с многоточием.
+func TruncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }

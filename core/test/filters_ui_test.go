@@ -1,8 +1,12 @@
-package main
+package test
 
 import (
 	"strings"
 	"testing"
+
+	"pantheon/core/bot"
+	"pantheon/core/config"
+	"pantheon/core/olx"
 )
 
 func TestParseFilterParam(t *testing.T) {
@@ -16,7 +20,7 @@ func TestParseFilterParam(t *testing.T) {
 		{"filter_enum_color", "filter_enum_color", ""},
 	}
 	for _, c := range cases {
-		base, sub := parseFilterParam(c.in)
+		base, sub := olx.ParseFilterParam(c.in)
 		if base != c.base || sub != c.sub {
 			t.Errorf("parseFilterParam(%q) = (%q, %q), want (%q, %q)", c.in, base, sub, c.base, c.sub)
 		}
@@ -25,7 +29,7 @@ func TestParseFilterParam(t *testing.T) {
 
 func TestParseOLXURLFilters(t *testing.T) {
 	u := "https://www.olx.ua/uk/transport/legkovye-avtomobili/vaz/?search%5Bfilter_enum_color%5D%5B0%5D=4&search%5Bfilter_float_motor_year%5D%5Bfrom%5D=2000&search%5Bfilter_float_motor_year%5D%5Bto%5D=2010"
-	sc, err := ParseOLXURL(u)
+	sc, err := olx.ParseOLXURL(u)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,12 +44,12 @@ func TestParseOLXURLFilters(t *testing.T) {
 }
 
 func TestCategoryFiltersSkipsReserved(t *testing.T) {
-	defs := (&BotUI{}).categoryFilters(1115, "")
+	defs := (&bot.BotUI{}).CategoryFilters(1115, "")
 	if len(defs) == 0 {
 		t.Fatal("no filters for category 1115")
 	}
 	for _, d := range defs {
-		if isReservedFilterKey(d.Key) {
+		if olx.IsReservedFilterKey(d.Key) {
 			t.Errorf("reserved filter %q leaked into UI", d.Key)
 		}
 	}
@@ -61,16 +65,16 @@ func TestCategoryFiltersSkipsReserved(t *testing.T) {
 }
 
 func TestFiltersSummary(t *testing.T) {
-	draft := SearchConfig{
+	draft := config.SearchConfig{
 		Category: 1115,
 		Filters: map[string][]string{
 			"filter_enum_color": {"4"},
 		},
-		Ranges: map[string]FilterRange{
+		Ranges: map[string]config.FilterRange{
 			"filter_float_motor_year": {From: 2000, To: 2010},
 		},
 	}
-	got := filtersSummary(draft)
+	got := bot.FiltersSummary(draft)
 	if !strings.Contains(got, "олір") && !strings.Contains(got, "олiр") {
 		t.Errorf("summary has no color label: %q", got)
 	}
@@ -80,15 +84,15 @@ func TestFiltersSummary(t *testing.T) {
 }
 
 func TestRentCategoryFilters(t *testing.T) {
-	cat := FindCategory(1760) // Довгострокова оренда квартир
+	cat := olx.FindCategory(1760) // Довгострокова оренда квартир
 	if cat == nil {
 		t.Fatal("rent category 1760 not found in categories.go")
 	}
-	if !HasFilterCategory(1760) {
+	if !olx.HasFilterCategory(1760) {
 		t.Fatal("rent category has no filters metadata")
 	}
 
-	defs := (&BotUI{}).categoryFilters(1760, "")
+	defs := (&bot.BotUI{}).CategoryFilters(1760, "")
 	has := map[string]bool{}
 	for _, d := range defs {
 		has[d.Key] = true
@@ -102,14 +106,14 @@ func TestRentCategoryFilters(t *testing.T) {
 	// Проверяем, что до категории можно дойти из TopCategories.
 	root := 1760
 	for i := 0; i < 10; i++ {
-		c := FindCategory(root)
+		c := olx.FindCategory(root)
 		if c == nil || c.ParentID == 0 {
 			break
 		}
 		root = c.ParentID
 	}
 	found := false
-	for _, tc := range TopCategories {
+	for _, tc := range olx.TopCategories {
 		if tc.ID == root {
 			found = true
 			break
@@ -122,16 +126,16 @@ func TestRentCategoryFilters(t *testing.T) {
 
 func TestRangeLabel(t *testing.T) {
 	cases := []struct {
-		r    FilterRange
+		r    config.FilterRange
 		unit string
 		want string
 	}{
-		{FilterRange{From: 2000, To: 2010}, "", "от 2000 до 2010"},
-		{FilterRange{From: 100}, "тис.км", "от 100 тис.км"},
-		{FilterRange{To: 1.6}, "л", "до 1.6 л"},
+		{config.FilterRange{From: 2000, To: 2010}, "", "от 2000 до 2010"},
+		{config.FilterRange{From: 100}, "тис.км", "от 100 тис.км"},
+		{config.FilterRange{To: 1.6}, "л", "до 1.6 л"},
 	}
 	for _, c := range cases {
-		if got := rangeLabel(c.r, c.unit); got != c.want {
+		if got := bot.RangeLabel(c.r, c.unit); got != c.want {
 			t.Errorf("rangeLabel(%+v, %q) = %q, want %q", c.r, c.unit, got, c.want)
 		}
 	}

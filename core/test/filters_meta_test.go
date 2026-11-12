@@ -1,16 +1,18 @@
-package main
+package test
 
 import (
 	"encoding/json"
 	"testing"
+
+	"pantheon/core/olx"
 )
 
 func TestFiltersMetaLoaded(t *testing.T) {
-	if len(AllFilters) < 600 {
-		t.Fatalf("AllFilters = %d, want >= 600", len(AllFilters))
+	if len(olx.AllFilters) < 600 {
+		t.Fatalf("AllFilters = %d, want >= 600", len(olx.AllFilters))
 	}
 
-	defs := FiltersForCategory(1115) // ВАЗ, легкові авто
+	defs := olx.FiltersForCategory(1115) // ВАЗ, легкові авто
 	if len(defs) < 15 {
 		t.Fatalf("FiltersForCategory(1115) = %d, want >= 15", len(defs))
 	}
@@ -34,7 +36,7 @@ func TestFiltersMetaLoaded(t *testing.T) {
 }
 
 func TestFilterValues(t *testing.T) {
-	for _, d := range FiltersForCategory(1115) {
+	for _, d := range olx.FiltersForCategory(1115) {
 		if d.Key != "filter_enum_color" {
 			continue
 		}
@@ -62,11 +64,11 @@ func TestDisplayParams(t *testing.T) {
 		{"key":"empty","name":"Пусто","type":"input","value":null}
 	]`
 
-	var params []Param
+	var params []olx.Param
 	if err := json.Unmarshal([]byte(raw), &params); err != nil {
 		t.Fatal(err)
 	}
-	o := Offer{Params: params}
+	o := olx.Offer{Params: params}
 	got := o.DisplayParams()
 
 	if len(got) != 3 {

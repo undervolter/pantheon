@@ -1,17 +1,23 @@
-package main
+package test
 
-import "testing"
+import (
+	"testing"
+
+	"pantheon/core/bot"
+	"pantheon/core/config"
+	"pantheon/core/olx"
+)
 
 func TestRenderCityResults(t *testing.T) {
-	ui := &BotUI{}
-	results := []GeoLocationSuggestion{
+	ui := &bot.BotUI{}
+	results := []olx.GeoLocationSuggestion{
 		{
-			City:   GeoCity{ID: 221, Name: "Кременчук"},
-			Region: GeoRegion{ID: 15, Name: "Полтавська область"},
+			City:   olx.GeoCity{ID: 221, Name: "Кременчук"},
+			Region: olx.GeoRegion{ID: 15, Name: "Полтавська область"},
 		},
 		{
-			City:   GeoCity{ID: 284, Name: "Полтава"},
-			Region: GeoRegion{ID: 15, Name: "Полтавська область"},
+			City:   olx.GeoCity{ID: 284, Name: "Полтава"},
+			Region: olx.GeoRegion{ID: 15, Name: "Полтавська область"},
 		},
 	}
 
@@ -49,8 +55,8 @@ func TestRenderCityResults(t *testing.T) {
 }
 
 func TestRenderCityStepHasManualButton(t *testing.T) {
-	ui := &BotUI{}
-	_, km := ui.RenderCityStep(SearchConfig{})
+	ui := &bot.BotUI{}
+	_, km := ui.RenderCityStep(config.SearchConfig{})
 	if km == nil {
 		t.Fatal("no keyboard")
 	}
@@ -68,9 +74,9 @@ func TestRenderCityStepHasManualButton(t *testing.T) {
 }
 
 func TestRenderCityResultsRegionOnly(t *testing.T) {
-	ui := &BotUI{}
-	results := []GeoLocationSuggestion{
-		{Region: GeoRegion{ID: 15, Name: "Полтавська область"}},
+	ui := &bot.BotUI{}
+	results := []olx.GeoLocationSuggestion{
+		{Region: olx.GeoRegion{ID: 15, Name: "Полтавська область"}},
 	}
 	_, km := ui.RenderCityResults("Полтавська", results)
 	if km == nil {
@@ -90,8 +96,8 @@ func TestRenderCityResultsRegionOnly(t *testing.T) {
 }
 
 func TestRenderPriceStepHasRangeButton(t *testing.T) {
-	ui := &BotUI{}
-	_, km := ui.RenderPriceStep(SearchConfig{})
+	ui := &bot.BotUI{}
+	_, km := ui.RenderPriceStep(config.SearchConfig{})
 	if km == nil {
 		t.Fatal("no keyboard")
 	}
@@ -129,7 +135,7 @@ func TestParsePriceRange(t *testing.T) {
 	}
 
 	for _, c := range checks {
-		gotMin, gotMax, ok := parsePriceRange(c.in)
+		gotMin, gotMax, ok := bot.ParsePriceRange(c.in)
 		if ok != c.ok || gotMin != c.min || gotMax != c.max {
 			t.Errorf("parsePriceRange(%q) = (%v, %v, %v), want (%v, %v, %v)",
 				c.in, gotMin, gotMax, ok, c.min, c.max, c.ok)
@@ -138,8 +144,8 @@ func TestParsePriceRange(t *testing.T) {
 }
 
 func TestRenderDistrictStep(t *testing.T) {
-	ui := &BotUI{}
-	districts := []GeoDistrict{
+	ui := &bot.BotUI{}
+	districts := []olx.GeoDistrict{
 		{ID: 11, Name: "Печерський"},
 		{ID: 13, Name: "Подільський"},
 	}

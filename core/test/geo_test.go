@@ -1,6 +1,10 @@
-package main
+package test
 
-import "testing"
+import (
+	"testing"
+
+	"pantheon/core/olx"
+)
 
 func TestNormalizeGeoName(t *testing.T) {
 	cases := map[string]string{
@@ -10,7 +14,7 @@ func TestNormalizeGeoName(t *testing.T) {
 		"Їжакевич":      "ижакевич",
 	}
 	for in, want := range cases {
-		if got := normalizeGeoName(in); got != want {
+		if got := olx.NormalizeGeoName(in); got != want {
 			t.Errorf("normalizeGeoName(%q) = %q, want %q", in, got, want)
 		}
 	}
@@ -27,19 +31,19 @@ func TestLevenshteinTypos(t *testing.T) {
 		{"кременчук", "кременчук", 0},
 	}
 	for _, c := range cases {
-		if got := levenshtein(c.a, c.b); got != c.want {
+		if got := olx.Levenshtein(c.a, c.b); got != c.want {
 			t.Errorf("levenshtein(%q, %q) = %d, want %d", c.a, c.b, got, c.want)
 		}
 	}
 }
 
 func TestRankLocationsPrefersCloseName(t *testing.T) {
-	results := []GeoLocationSuggestion{
-		{City: GeoCity{ID: 1, Name: "Кременчуки"}, Region: GeoRegion{ID: 20, Name: "Хмельницька область"}},
-		{City: GeoCity{ID: 2, Name: "Кременчук"}, Region: GeoRegion{ID: 15, Name: "Полтавська область"}},
-		{City: GeoCity{ID: 3, Name: "Київ"}, Region: GeoRegion{ID: 25, Name: "Київська область"}},
+	results := []olx.GeoLocationSuggestion{
+		{City: olx.GeoCity{ID: 1, Name: "Кременчуки"}, Region: olx.GeoRegion{ID: 20, Name: "Хмельницька область"}},
+		{City: olx.GeoCity{ID: 2, Name: "Кременчук"}, Region: olx.GeoRegion{ID: 15, Name: "Полтавська область"}},
+		{City: olx.GeoCity{ID: 3, Name: "Київ"}, Region: olx.GeoRegion{ID: 25, Name: "Київська область"}},
 	}
-	got := rankLocations("креминчуг", results)
+	got := olx.RankLocations("креминчуг", results)
 	if len(got) == 0 {
 		t.Fatal("no matches")
 	}

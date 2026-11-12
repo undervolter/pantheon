@@ -1,14 +1,16 @@
-package main
+package test
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"pantheon/core/olx"
 )
 
 func TestParseOLXURL(t *testing.T) {
 	raw := "https://www.olx.ua/d/uk/elektronika/telefony-i-aksesuary/q-iphone-15/?search[filter_float_price:to]=30000&search[city_id]=268"
-	sc, err := ParseOLXURL(raw)
+	sc, err := olx.ParseOLXURL(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +36,7 @@ func TestParseOLXURLMultiBrand(t *testing.T) {
 		"?search[filter_enum_digital_camera_manufacturers][0]=2580" +
 		"&search[filter_enum_digital_camera_manufacturers][1]=2591"
 
-	sc, err := ParseOLXURL(raw)
+	sc, err := olx.ParseOLXURL(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,18 +55,18 @@ func TestParseOLXURLMultiBrand(t *testing.T) {
 }
 
 func TestOfferFilters(t *testing.T) {
-	top := Offer{Promotion: Promotion{TopAd: true}}
+	top := olx.Offer{Promotion: olx.Promotion{TopAd: true}}
 	if !top.IsTopAd() {
 		t.Error("top ad must be filtered")
 	}
-	normal := Offer{Promotion: Promotion{Options: []string{"bundle_optimum"}}}
+	normal := olx.Offer{Promotion: olx.Promotion{Options: []string{"bundle_optimum"}}}
 	if normal.IsTopAd() {
 		t.Error("bundle_optimum must not be treated as top ad")
 	}
 }
 
 func TestPhotoURL(t *testing.T) {
-	p := Photo{
+	p := olx.Photo{
 		Width:  750,
 		Height: 1000,
 		Link:   "https://ireland.apollo.olxcdn.com/v1/files/abc-UA/image;s={width}x{height}",
@@ -75,18 +77,18 @@ func TestPhotoURL(t *testing.T) {
 	}
 
 	// Если размеров нет — подставляем дефолтные.
-	p = Photo{Link: "https://x/image;s={width}x{height}"}
+	p = olx.Photo{Link: "https://x/image;s={width}x{height}"}
 	if got := p.URL(); got != "https://x/image;s=600x600" {
 		t.Errorf("default URL() = %q", got)
 	}
 
-	if got := (Photo{}).URL(); got != "" {
+	if got := (olx.Photo{}).URL(); got != "" {
 		t.Errorf("empty photo URL = %q", got)
 	}
 }
 
 func TestOfferPhotoURLs(t *testing.T) {
-	o := Offer{Photos: []Photo{
+	o := olx.Offer{Photos: []olx.Photo{
 		{Width: 750, Height: 1000, Link: "https://x/1;s={width}x{height}"},
 		{Width: 750, Height: 1000, Link: "https://x/1;s={width}x{height}"}, // дубль
 		{Width: 750, Height: 1000, Link: "https://x/2;s={width}x{height}"},
@@ -104,11 +106,11 @@ func TestOfferPhotoURLs(t *testing.T) {
 
 func TestGetPriceArrangedWithValue(t *testing.T) {
 	raw := `[{"key":"price","name":"Ціна","type":"price","value":{"value":4000,"currency":"UAH","arranged":true,"budget":false,"negotiable":true,"label":"4 000 грн."}}]`
-	var params []Param
+	var params []olx.Param
 	if err := json.Unmarshal([]byte(raw), &params); err != nil {
 		t.Fatal(err)
 	}
-	o := Offer{Params: params}
+	o := olx.Offer{Params: params}
 	got := o.GetPrice()
 	if !strings.Contains(got, "4 000") {
 		t.Errorf("GetPrice() = %q, want actual amount 4 000", got)
@@ -120,11 +122,11 @@ func TestGetPriceArrangedWithValue(t *testing.T) {
 
 func TestGetPriceArrangedWithoutValue(t *testing.T) {
 	raw := `[{"key":"price","name":"Ціна","type":"price","value":{"value":0,"currency":"UAH","arranged":true,"budget":false,"label":"Договірна"}}]`
-	var params []Param
+	var params []olx.Param
 	if err := json.Unmarshal([]byte(raw), &params); err != nil {
 		t.Fatal(err)
 	}
-	o := Offer{Params: params}
+	o := olx.Offer{Params: params}
 	if got := o.GetPrice(); got != "Договірна" {
 		t.Errorf("GetPrice() = %q, want Договірна", got)
 	}

@@ -1,13 +1,16 @@
-package main
+package bot
 
 import (
+	"pantheon/core/config"
+	"pantheon/core/olx"
+	"pantheon/core/checker"
+	"pantheon/core/version"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,7 +70,7 @@ type TelegramNotifier struct {
 	botToken   string
 	chatIDs    []string
 	httpClient *http.Client
-	cfg        *Config
+	cfg *config.Config
 	ui         *BotUI
 	sentCount  int64
 
@@ -148,22 +151,9 @@ func (t *TelegramNotifier) reviveChat(chatID string) {
 	t.deadMu.Unlock()
 }
 
-func (t *TelegramNotifier) SetUI(ui *BotUI, cfg *Config) {
+func (t *TelegramNotifier) SetUI(ui *BotUI, cfg *config.Config) {
 	t.ui = ui
 	t.cfg = cfg
-}
-
-var (
-	brTagRegex   = regexp.MustCompile(`(?i)<br\s*/?>`)
-	pTagRegex    = regexp.MustCompile(`(?i)</?p>`)
-	allTagsRegex = regexp.MustCompile(`<[^>]*>`)
-)
-
-func stripHTMLTags(s string) string {
-	s = brTagRegex.ReplaceAllString(s, "\n")
-	s = pTagRegex.ReplaceAllString(s, "\n")
-	s = allTagsRegex.ReplaceAllString(s, "")
-	return strings.TrimSpace(s)
 }
 
 // filterChatIDsForOwner оставляет только чат-владелец фильтра.
@@ -182,7 +172,7 @@ func filterChatIDsForOwner(chatIDs []string, ownerChatID string) []string {
 	return nil
 }
 
-func (t *TelegramNotifier) NotifyNewOffer(offer Offer, filterName, ownerChatID string) {
+func (t *TelegramNotifier) NotifyNewOffer(offer olx.Offer, filterName, ownerChatID string) {
 	if t.botToken == "" {
 		return
 	}
@@ -209,11 +199,11 @@ func (t *TelegramNotifier) NotifyNewOffer(offer Offer, filterName, ownerChatID s
 		maxParams = t.cfg.GetMaxParams()
 	}
 
-	price := sanitizeListingText(offer.GetPrice())
+	price := olx.SanitizeListingText(offer.GetPrice())
 	if price == "" {
 		price = "Не вказана"
 	}
-	desc := sanitizeListingDescription(stripHTMLTags(offer.Description))
+	desc := olx.SanitizeListingDescription(olx.StripHTMLTags(offer.Description))
 	const maxDescLen = 450
 	if len([]rune(desc)) > maxDescLen {
 		desc = string([]rune(desc)[:maxDescLen]) + "..."
@@ -222,11 +212,11 @@ func (t *TelegramNotifier) NotifyNewOffer(offer Offer, filterName, ownerChatID s
 		desc = "Без опису"
 	}
 
-	title := sanitizeListingText(offer.Title)
+	title := olx.SanitizeListingText(offer.Title)
 	if title == "" {
 		title = "Без названия"
 	}
-	loc := sanitizeListingText(offer.GetRegionCityDistrict())
+	loc := olx.SanitizeListingText(offer.GetRegionCityDistrict())
 	if loc == "" {
 		loc = "Україна"
 	}
@@ -352,7 +342,7 @@ func (t *TelegramNotifier) SetupBotMenu() error {
 	})
 }
 
-func (t *TelegramNotifier) StartPolling(checker *Checker) {
+func (t *TelegramNotifier) StartPolling(checker *checker.Checker) {
 	if t.botToken == "" {
 		fmt.Println("[TG Bot] Токен Telegram не задан. Бот управления отключен.")
 		return
@@ -587,7 +577,7 @@ func (t *TelegramNotifier) handleMessage(msg *TGMessage) {
 		return
 
 	case "/add":
-		st.Draft = SearchConfig{}
+		st.Draft = config.SearchConfig{}
 		st.SelectedBrands = map[string]string{}
 		st.Step = StepNone
 		catText, km := t.ui.RenderCategoryStep()
@@ -608,7 +598,7 @@ func (t *TelegramNotifier) handleMessage(msg *TGMessage) {
 		return
 
 	case "/version":
-		text := fmt.Sprintf("🐉 <b>pantheon open-core</b> v%s", appVersion)
+		text := fmt.Sprintf("🐉 <b>pantheon open-core</b> v%s", version.AppVersion)
 		_ = t.sendMessage(chatID, text, nil)
 		return
 	}
@@ -621,7 +611,7 @@ func (t *TelegramNotifier) handleMessage(msg *TGMessage) {
 
 	// 3. Распознавание ссылок OLX
 	if strings.Contains(text, "olx.ua") && (strings.HasPrefix(text, "http://") || strings.HasPrefix(text, "https://")) {
-		sc, err := ParseOLXURL(text)
+		sc, err := olx.ParseOLXURL(text)
 		if err == nil {
 			st.Step = StepNone
 			st.Draft = *sc
@@ -634,7 +624,7 @@ func (t *TelegramNotifier) handleMessage(msg *TGMessage) {
 	// 3. Шаг ввода поискового запроса
 	if st.Step == StepWaitingQuery {
 		st.Draft.Query = strings.TrimSpace(text)
-		st.Draft.QueryVariants = QueryVariants(text)
+		st.Draft.QueryVariants = olx.QueryVariants(text)
 		if bd := brandDisplay(st.Draft); bd != "" {
 			st.Draft.Name = bd + " " + st.Draft.Query
 		} else {
@@ -648,12 +638,12 @@ func (t *TelegramNotifier) handleMessage(msg *TGMessage) {
 
 	// 3b. Шаг добавления своего варианта запроса
 	if st.Step == StepWaitingVariant {
-		norm := NormalizeQuery(text)
+		norm := olx.NormalizeQuery(text)
 		if norm == "" {
 			_ = t.sendMessage(chatID, "❌ Пустой вариант. Напиши текст, например: <code>iphone 4s</code> или <code>4s</code>.", nil)
 			return
 		}
-		if stringInSlice(st.Draft.QueryVariants, norm) {
+		if olx.StringInSlice(st.Draft.QueryVariants, norm) {
 			_ = t.sendMessage(chatID, fmt.Sprintf(
 				"ℹ️ Вариант «%s» уже покрыт формой <code>%s</code> — отдельно добавлять не нужно.",
 				html.EscapeString(strings.TrimSpace(text)), html.EscapeString(norm)), nil)
@@ -702,9 +692,9 @@ func (t *TelegramNotifier) handleMessage(msg *TGMessage) {
 			minP, maxP = maxP, minP
 		}
 		if st.Draft.Ranges == nil {
-			st.Draft.Ranges = map[string]FilterRange{}
+			st.Draft.Ranges = map[string]config.FilterRange{}
 		}
-		st.Draft.Ranges[def.Key] = FilterRange{From: minP, To: maxP}
+		st.Draft.Ranges[def.Key] = config.FilterRange{From: minP, To: maxP}
 		st.Step = StepNone
 		view, km := t.ui.RenderFilterValues(st.Draft, st.FilterIdx, 0)
 		_ = t.sendMessage(chatID, view, km)
@@ -724,7 +714,7 @@ func (t *TelegramNotifier) handleCityQuery(chatID, query string) {
 		return
 	}
 
-	results, err := t.ui.checker.client.SearchLocations(query)
+	results, err := t.ui.checker.Client().SearchLocations(query)
 	if err != nil {
 		_ = t.sendMessage(chatID, fmt.Sprintf("❌ Не удалось получить список городов: %v", err), nil)
 		return
@@ -749,7 +739,7 @@ func (t *TelegramNotifier) applyCitySelection(chatID string, msgID, cityID, regi
 	st.Draft.DistrictName = ""
 
 	if cityID > 0 {
-		districts, err := t.ui.checker.client.FetchCityDistricts(cityID)
+		districts, err := t.ui.checker.Client().FetchCityDistricts(cityID)
 		if err == nil && len(districts) > 0 {
 			st.Step = StepNone
 			text, km := t.ui.RenderDistrictStep(strings.TrimPrefix(cityName, "📍 "), districts, cityID, regionID)
@@ -799,7 +789,7 @@ func setBrandDraftFromSelection(st *UserWizardState, catID int) {
 	st.Draft.BrandValues = nil
 	st.Draft.BrandNames = nil
 
-	info := GetCategoryBrands(catID)
+	info := olx.GetCategoryBrands(catID)
 	if info == nil {
 		return
 	}
@@ -830,7 +820,7 @@ func (t *TelegramNotifier) startBrandStep(chatID string, msgID, catID int) {
 	st.Draft.BrandValues = nil
 	st.Draft.BrandNames = nil
 
-	if info := GetCategoryBrands(catID); info != nil && len(info.Brands) > 0 {
+	if info := olx.GetCategoryBrands(catID); info != nil && len(info.Brands) > 0 {
 		text, km := t.ui.RenderBrandStep(catID, 0, selectedBrandSet(st))
 		_ = t.editMessageText(chatID, msgID, text, km)
 		return
@@ -972,7 +962,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 		_ = t.editMessageText(chatID, msgID, text, km)
 
 	case data == "add_start":
-		st.Draft = SearchConfig{}
+		st.Draft = config.SearchConfig{}
 		st.SelectedBrands = map[string]string{}
 		st.Step = StepNone
 		text, km := t.ui.RenderCategoryStep()
@@ -995,7 +985,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 			_ = t.editMessageText(chatID, msgID, text, km)
 		} else {
 			st.ParentCat = catID
-			c := FindCategory(catID)
+			c := olx.FindCategory(catID)
 			if c != nil && len(c.Children) > 0 {
 				text, km := t.ui.RenderSubcategoryStep(catID)
 				_ = t.editMessageText(chatID, msgID, text, km)
@@ -1011,7 +1001,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 	case strings.HasPrefix(data, "add_cat_select:"):
 		catID, _ := strconv.Atoi(strings.TrimPrefix(data, "add_cat_select:"))
 		st.Draft.Category = catID
-		if c := FindCategory(catID); c != nil {
+		if c := olx.FindCategory(catID); c != nil {
 			st.Draft.CatName = c.Name
 		}
 		t.startBrandStep(chatID, msgID, catID)
@@ -1021,7 +1011,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 
 		// Если у подкатегории есть свои подкатегории — идём глубже,
 		// а не притворяемся, что это лист.
-		if c := FindCategory(subID); c != nil && len(c.Children) > 0 {
+		if c := olx.FindCategory(subID); c != nil && len(c.Children) > 0 {
 			st.ParentCat = subID
 			text, km := t.ui.RenderSubcategoryStep(subID)
 			_ = t.editMessageText(chatID, msgID, text, km)
@@ -1029,7 +1019,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 		}
 
 		st.Draft.Category = subID
-		if c := FindCategory(subID); c != nil {
+		if c := olx.FindCategory(subID); c != nil {
 			st.Draft.CatName = c.Name
 		}
 		t.startBrandStep(chatID, msgID, subID)
@@ -1058,7 +1048,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 				delete(st.SelectedBrands, brandID)
 			} else {
 				name := brandID
-				if b := FindBrand(catID, brandID); b != nil {
+				if b := olx.FindBrand(catID, brandID); b != nil {
 					name = b.Name
 				}
 				st.SelectedBrands[brandID] = name
@@ -1094,11 +1084,11 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 			catID, _ := strconv.Atoi(parts[0])
 			brandID := parts[1]
 			st.Draft.Category = catID
-			if c := FindCategory(catID); c != nil {
+			if c := olx.FindCategory(catID); c != nil {
 				st.Draft.CatName = c.Name
 			}
 			name := brandID
-			if b := FindBrand(catID, brandID); b != nil {
+			if b := olx.FindBrand(catID, brandID); b != nil {
 				name = b.Name
 			}
 			st.SelectedBrands = map[string]string{brandID: name}
@@ -1180,7 +1170,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 		st.Step = StepWaitingCity
 		// Заранее греем индекс городов в фоне, чтобы поиск с опечатками
 		// не заставлял ждать 25 запросов к OLX.
-		go t.ui.checker.client.WarmGeoIndex()
+		go t.ui.checker.Client().WarmGeoIndex()
 		prompt := "🏙 <b>Напиши город или область</b>\n\nНапример: <code>Кременчук</code>, <code>Бровари</code> или <code>Полтавська область</code>:"
 		_ = t.editMessageText(chatID, msgID, prompt, markup(row(btn("❌ Отмена", "menu_main"))))
 
@@ -1196,9 +1186,9 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 			regionID, _ := strconv.Atoi(parts[1])
 
 			name := ""
-			if c := FindCity(cityID); c != nil {
+			if c := olx.FindCity(cityID); c != nil {
 				name = strings.TrimPrefix(c.Name, "📍 ")
-			} else if city, err := t.ui.checker.client.FetchCity(cityID); err == nil {
+			} else if city, err := t.ui.checker.Client().FetchCity(cityID); err == nil {
 				name = city.Name
 				if regionID == 0 {
 					regionID = city.RegionID
@@ -1223,7 +1213,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 			st.Draft.DistrictName = ""
 
 			name := ""
-			if region, err := t.ui.checker.client.FetchRegion(regionID); err == nil {
+			if region, err := t.ui.checker.Client().FetchRegion(regionID); err == nil {
 				name = region.Name
 			}
 			if name == "" {
@@ -1261,7 +1251,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 			st.Draft.RegionID = regionID
 
 			name := ""
-			if districts, err := t.ui.checker.client.FetchCityDistricts(cityID); err == nil {
+			if districts, err := t.ui.checker.Client().FetchCityDistricts(cityID); err == nil {
 				for _, d := range districts {
 					if d.ID == districtID {
 						name = d.Name
@@ -1283,9 +1273,9 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 
 			name := "Вся Украина"
 			if cityID > 0 {
-				if c := FindCity(cityID); c != nil {
+				if c := olx.FindCity(cityID); c != nil {
 					name = c.Name
-				} else if city, err := t.ui.checker.client.FetchCity(cityID); err == nil {
+				} else if city, err := t.ui.checker.Client().FetchCity(cityID); err == nil {
 					name = "📍 " + city.Name
 					if regionID == 0 {
 						regionID = city.RegionID
@@ -1464,7 +1454,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 					}
 					if def.Type == "checkboxes" {
 						cur := st.Draft.Filters[def.Key]
-						if stringInSlice(cur, v) {
+						if olx.StringInSlice(cur, v) {
 							out := cur[:0]
 							for _, x := range cur {
 								if x != v {
@@ -1481,7 +1471,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 							st.Draft.Filters[def.Key] = cur
 						}
 					} else {
-						if stringInSlice(st.Draft.Filters[def.Key], v) {
+						if olx.StringInSlice(st.Draft.Filters[def.Key], v) {
 							delete(st.Draft.Filters, def.Key)
 						} else {
 							st.Draft.Filters[def.Key] = []string{v}
@@ -1671,7 +1661,7 @@ func (t *TelegramNotifier) sendMessage(chatID, text string, km *InlineKeyboardMa
 			return err
 		}
 		// Fallback: пробуем отправить как чистый текст, если Telegram ругается на HTML сущности
-		plainText := stripHTMLTags(text)
+		plainText := olx.StripHTMLTags(text)
 		if plainErr := t.sendRawMessage(chatID, plainText, "", km); plainErr == nil {
 			return nil
 		}
@@ -1879,7 +1869,7 @@ func (t *TelegramNotifier) editMessageText(chatID string, messageID int, text st
 		}
 		// Пробуем fallback без HTML если ошибка парсинга
 		delete(payload, "parse_mode")
-		payload["text"] = stripHTMLTags(text)
+		payload["text"] = olx.StripHTMLTags(text)
 		if fbBody, err := json.Marshal(payload); err == nil {
 			if fbReq, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(fbBody)); err == nil {
 				fbReq.Header.Set("Content-Type", "application/json")
@@ -1973,4 +1963,35 @@ func (t *TelegramNotifier) getUpdates(offset int) ([]TGUpdate, error) {
 	}
 
 	return tgResp.Result, nil
+}
+
+
+const (
+	TelegramChatGap  = telegramChatGap
+	DefaultRetryWait = defaultRetryWait
+)
+
+func FilterChatIDsForOwner(chatIDs []string, ownerChatID string) []string {
+	return filterChatIDsForOwner(chatIDs, ownerChatID)
+}
+func IsDeadChatError(text string) bool {
+	return isDeadChatError(text)
+}
+func IsPhotoRelatedError(err error) bool {
+	return isPhotoRelatedError(err)
+}
+func ParseRetryAfter(body []byte) time.Duration {
+	return parseRetryAfter(body)
+}
+func (t *TelegramNotifier) WaitChat(chatID string) {
+	t.waitChat(chatID)
+}
+func (t *TelegramNotifier) MarkChatDead(chatID, reason string) {
+	t.markChatDead(chatID, reason)
+}
+func (t *TelegramNotifier) ReviveChat(chatID string) {
+	t.reviveChat(chatID)
+}
+func (t *TelegramNotifier) IsChatDead(chatID string) bool {
+	return t.isChatDead(chatID)
 }

@@ -1,9 +1,11 @@
-package main
+package test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"pantheon/core/config"
 )
 
 func TestLoadConfigPhotoDefaults(t *testing.T) {
@@ -17,7 +19,7 @@ func TestLoadConfigPhotoDefaults(t *testing.T) {
 		return path
 	}
 
-	cfg, err := LoadConfig(write("default.json", `{"interval_seconds":5}`))
+	cfg, err := config.LoadConfig(write("default.json", `{"interval_seconds":5}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +30,7 @@ func TestLoadConfigPhotoDefaults(t *testing.T) {
 		t.Errorf("MaxPhotos = %d, want 3", cfg.MaxPhotos)
 	}
 
-	cfg, err = LoadConfig(write("off.json", `{"send_photos":false,"max_photos":5}`))
+	cfg, err = config.LoadConfig(write("off.json", `{"send_photos":false,"max_photos":5}`))
 	if err != nil {
 		t.Fatal(err)
 	}

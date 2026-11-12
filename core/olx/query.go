@@ -1,9 +1,23 @@
-package main
+package olx
 
 import (
 	"regexp"
 	"strings"
 )
+
+// StringInSlice сообщает, содержится ли строка v в срезе list.
+func StringInSlice(list []string, v string) bool {
+	for _, item := range list {
+		if item == v {
+			return true
+		}
+	}
+	return false
+}
+
+func stringInSlice(list []string, v string) bool {
+	return StringInSlice(list, v)
+}
 
 // Синонимы, которые встречаются в объявлениях и в том, как люди пишут запросы.
 var querySynonyms = strings.NewReplacer(
@@ -99,7 +113,7 @@ func OfferMatchesQuery(o *Offer, variants []string) bool {
 	if len(variants) == 0 {
 		return true
 	}
-	text := NormalizeQuery(o.Title + " " + stripHTMLTags(o.Description))
+	text := NormalizeQuery(o.Title + " " + StripHTMLTags(o.Description))
 	if text == "" {
 		return false
 	}
@@ -112,14 +126,14 @@ func OfferMatchesQuery(o *Offer, variants []string) bool {
 			continue
 		}
 		if len(vt) == 1 {
-			if stringInSlice(tokens, vt[0]) {
+			if StringInSlice(tokens, vt[0]) {
 				return true
 			}
 			continue
 		}
 		all := true
 		for _, tok := range vt {
-			if !stringInSlice(tokens, tok) {
+			if !StringInSlice(tokens, tok) {
 				all = false
 				break
 			}

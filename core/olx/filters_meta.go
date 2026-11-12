@@ -1,4 +1,4 @@
-package main
+package olx
 
 import (
 	_ "embed"

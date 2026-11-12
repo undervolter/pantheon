@@ -1,15 +1,15 @@
-package main
+package test
 
 import (
 	"strings"
 	"testing"
+
+	"pantheon/core/bot"
+	"pantheon/core/olx"
 )
 
-// Регрессионный тест: ID городов должны совпадать с текущим OLX.
-// Если кто-то перегенерирует categories.go старым генератором —
-// тест сразу покажет, что city_id/region_id снова разъехались.
 func TestDeepCategoryNavigation(t *testing.T) {
-	cam := FindCategory(73)
+	cam := olx.FindCategory(73)
 	if cam == nil {
 		t.Fatal("category 73 (digital cameras) not found")
 	}
@@ -17,12 +17,12 @@ func TestDeepCategoryNavigation(t *testing.T) {
 		t.Errorf("category 73 parent = %d, want 429", cam.ParentID)
 	}
 
-	bySlug := FindCategoryBySlug("tsifrovye-fotoapparaty")
+	bySlug := olx.FindCategoryBySlug("tsifrovye-fotoapparaty")
 	if bySlug == nil || bySlug.ID != 73 {
 		t.Fatalf("FindCategoryBySlug = %+v", bySlug)
 	}
 
-	crumb := CategoryBreadcrumb(73)
+	crumb := olx.CategoryBreadcrumb(73)
 	if !strings.Contains(crumb, "Електроніка") || !strings.Contains(crumb, "Фото") {
 		t.Errorf("breadcrumb = %q, want Электроника/Фото/...", crumb)
 	}
@@ -30,7 +30,7 @@ func TestDeepCategoryNavigation(t *testing.T) {
 		t.Errorf("breadcrumb must contain path separator: %q", crumb)
 	}
 
-	ui := &BotUI{}
+	ui := &bot.BotUI{}
 
 	// Внутри "Фото/Відео" должна быть кнопка "Цифрові фотоапарати".
 	_, km := ui.RenderSubcategoryStep(429)
@@ -54,7 +54,7 @@ func TestDeepCategoryNavigation(t *testing.T) {
 	}
 }
 
-func hasCallback(km *InlineKeyboardMarkup, data string) bool {
+func hasCallback(km *bot.InlineKeyboardMarkup, data string) bool {
 	if km == nil {
 		return false
 	}
@@ -95,10 +95,10 @@ func TestTopCitiesKnownIDs(t *testing.T) {
 	}
 
 	for _, w := range want {
-		var found *CityItem
-		for i := range TopCities {
-			if TopCities[i].Name == w.Name {
-				found = &TopCities[i]
+		var found *olx.CityItem
+		for i := range olx.TopCities {
+			if olx.TopCities[i].Name == w.Name {
+				found = &olx.TopCities[i]
 				break
 			}
 		}

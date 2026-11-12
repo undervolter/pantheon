@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"encoding/json"
@@ -128,6 +128,13 @@ func (c *Config) PerfSettings() (concurrency, fetchLimit int) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.Concurrency, c.FetchLimit
+}
+
+// SetFilePath задаёт путь к файлу конфига на диске.
+func (c *Config) SetFilePath(p string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.filePath = p
 }
 
 func (c *Config) Save() error {

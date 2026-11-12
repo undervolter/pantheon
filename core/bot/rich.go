@@ -1,6 +1,7 @@
-package main
+package bot
 
 import (
+	"pantheon/core/olx"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -9,7 +10,7 @@ import (
 	"time"
 )
 
-func makeOfferMarkup(offer Offer) *InlineKeyboardMarkup {
+func makeOfferMarkup(offer olx.Offer) *InlineKeyboardMarkup {
 	return markup(row(InlineKeyboardButton{
 		Text: "Перейти на лот",
 		URL:  offer.URL,
@@ -44,10 +45,10 @@ func formatModerationDelay(d time.Duration) string {
 // Только сообщения в OLX / Сообщения в OLX + номер
 //
 // кнопки: Перейти на лот | Позвонить продавцу
-func buildRichOfferHTML(offer Offer, filterName string, maxPhotos int, showParams bool, maxParams int) string {
+func buildRichOfferHTML(offer olx.Offer, filterName string, maxPhotos int, showParams bool, maxParams int) string {
 	var b strings.Builder
 
-	title := sanitizeListingText(offer.Title)
+	title := olx.SanitizeListingText(offer.Title)
 	if title == "" {
 		title = "Без названия"
 	}
@@ -69,14 +70,14 @@ func buildRichOfferHTML(offer Offer, filterName string, maxPhotos int, showParam
 	b.WriteString("<h3>" + html.EscapeString(title) + "</h3>\n")
 
 	// 3. Цена.
-	price := sanitizeListingText(offer.GetPrice())
+	price := olx.SanitizeListingText(offer.GetPrice())
 	if price == "" {
 		price = "Не вказана"
 	}
 	b.WriteString("<p>Продаётся за <b>" + html.EscapeString(price) + "</b></p>\n")
 
 	// 4. Описание — раскрываемая цитата.
-	desc := sanitizeListingDescription(stripHTMLTags(offer.Description))
+	desc := olx.SanitizeListingDescription(olx.StripHTMLTags(offer.Description))
 	if desc != "" {
 		escaped := html.EscapeString(desc)
 		escaped = strings.ReplaceAll(escaped, "\n", "<br>")
@@ -89,7 +90,7 @@ func buildRichOfferHTML(offer Offer, filterName string, maxPhotos int, showParam
 	}
 
 	// 5. Местоположение: Область, Город - Район.
-	loc := sanitizeListingText(offer.GetRegionCityDistrict())
+	loc := olx.SanitizeListingText(offer.GetRegionCityDistrict())
 	if loc == "" {
 		loc = "Україна"
 	}
@@ -108,7 +109,7 @@ func buildRichOfferHTML(offer Offer, filterName string, maxPhotos int, showParam
 	b.WriteString("<p>" + contactLine + "</p>\n")
 
 	// 9. Служебная строка: фильтр и ID лота.
-	filterStr := sanitizeListingText(filterName)
+	filterStr := olx.SanitizeListingText(filterName)
 	if filterStr != "" || offer.ID != 0 {
 		footer := "Фильтр: " + html.EscapeString(filterStr)
 		if filterStr == "" {
@@ -123,7 +124,7 @@ func buildRichOfferHTML(offer Offer, filterName string, maxPhotos int, showParam
 }
 
 // buildParamsHTML собирает сворачиваемую таблицу характеристик.
-func buildParamsHTML(offer Offer, maxParams int) string {
+func buildParamsHTML(offer olx.Offer, maxParams int) string {
 	params := offer.DisplayParams()
 	if len(params) == 0 {
 		return ""
@@ -137,14 +138,14 @@ func buildParamsHTML(offer Offer, maxParams int) string {
 	b.WriteString(fmt.Sprintf("<details><summary>Характеристики (%d)</summary>\n", total))
 	b.WriteString("<table compact striped>\n")
 	for _, p := range params {
-		b.WriteString("<tr><td>" + html.EscapeString(truncateRunes(p.Label, 40)) +
-			"</td><td>" + html.EscapeString(truncateRunes(p.Value, 90)) + "</td></tr>\n")
+		b.WriteString("<tr><td>" + html.EscapeString(olx.TruncateRunes(p.Label, 40)) +
+			"</td><td>" + html.EscapeString(olx.TruncateRunes(p.Value, 90)) + "</td></tr>\n")
 	}
 	b.WriteString("</table>\n</details>\n")
 	return b.String()
 }
 
-func (t *TelegramNotifier) sendRichOffer(chatID string, offer Offer, filterName string, maxPhotos int, km *InlineKeyboardMarkup) error {
+func (t *TelegramNotifier) sendRichOffer(chatID string, offer olx.Offer, filterName string, maxPhotos int, km *InlineKeyboardMarkup) error {
 	if t.botToken == "" {
 		return fmt.Errorf("telegram bot token пуст")
 	}
@@ -194,7 +195,7 @@ func isPhotoRelatedError(err error) bool {
 		strings.Contains(s, "context deadline exceeded")
 }
 
-func testAlertOffer() Offer {
+func testAlertOffer() olx.Offer {
 	now := time.Now()
 	price, _ := json.Marshal(map[string]interface{}{
 		"value":      28000,
@@ -205,36 +206,36 @@ func testAlertOffer() Offer {
 		"negotiable": false,
 	})
 
-	return Offer{
+	return olx.Offer{
 		ID:              1160082,
 		URL:             "https://www.olx.ua/d/uk/obyavlenie/prodam-iphone-15-pro-max-256-neverlock-ID116hSA.html",
 		Title:           "iPhone 15 Pro Max 256GB Neverlock",
 		Description:     "Продам свой iPhone 15 Pro Max на 256 ГБ в идеальном состоянии. С первого дня в чехле и с защитным стеклом. Без сколов, без ремонтов, батарея 98%. Полный заводской комплект: коробка, кабель, чек. Продажа при личной встрече в Киеве или отправка OLX Доставкой.",
 		CreatedTime:     now.Add(-17 * time.Minute).Format(time.RFC3339),
 		LastRefreshTime: now.Format(time.RFC3339),
-		Location: Location{
-			City:     City{ID: 268, Name: "Київ"},
-			Region:   Region{ID: 25, Name: "Київська область"},
-			District: District{ID: 11, Name: "Печерський"},
+		Location: olx.Location{
+			City:     olx.City{ID: 268, Name: "Київ"},
+			Region:   olx.Region{ID: 25, Name: "Київська область"},
+			District: olx.District{ID: 11, Name: "Печерський"},
 		},
-		Params: []Param{{
+		Params: []olx.Param{{
 			Key:   "price",
 			Name:  "Ціна",
 			Type:  "price",
 			Value: json.RawMessage(price),
 		}},
-		Photos: []Photo{
+		Photos: []olx.Photo{
 			{Width: 750, Height: 1000, Link: "https://ireland.apollo.olxcdn.com/v1/files/0id9cnxtr6gn2-UA/image;s={width}x{height}"},
 			{Width: 750, Height: 1000, Link: "https://ireland.apollo.olxcdn.com/v1/files/srpaym0pxest-UA/image;s={width}x{height}"},
 			{Width: 750, Height: 1000, Link: "https://ireland.apollo.olxcdn.com/v1/files/a2rbfbzqxk2a3-UA/image;s={width}x{height}"},
 		},
-		Contact: OfferContact{Phone: true, Chat: true},
-		User:    OfferUser{ID: 1, Name: "Продавец"},
+		Contact: olx.OfferContact{Phone: true, Chat: true},
+		User:    olx.OfferUser{ID: 1, Name: "Продавец"},
 	}
 }
 
 // SendAlertOffer отправляет rich-алерт по конкретному объявлению во все доверенные чаты.
-func (t *TelegramNotifier) SendAlertOffer(offer Offer, filterName string) {
+func (t *TelegramNotifier) SendAlertOffer(offer olx.Offer, filterName string) {
 	if t.botToken == "" {
 		fmt.Println("[Test Alert] Токен бота не задан.")
 		return
@@ -286,7 +287,7 @@ func (t *TelegramNotifier) SendTestAlert() {
 }
 
 // SendTestAlertURL находит объявление по ссылке OLX и отправляет по нему алерт.
-func (t *TelegramNotifier) SendTestAlertURL(client *OLXClient, rawURL string) error {
+func (t *TelegramNotifier) SendTestAlertURL(client *olx.OLXClient, rawURL string) error {
 	offer, err := client.FindOfferByURL(rawURL)
 	if err != nil {
 		return err

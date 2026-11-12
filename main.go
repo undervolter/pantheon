@@ -6,6 +6,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"pantheon/core/bot"
+	"pantheon/core/checker"
+	"pantheon/core/config"
+	"pantheon/core/olx"
+	"pantheon/core/version"
 )
 
 func main() {
@@ -18,11 +24,11 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("pantheon open-core %s\n", appVersion)
+		fmt.Printf("pantheon open-core %s\n", version.AppVersion)
 		return
 	}
 
-	cfg, err := LoadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Ошибка загрузки конфига: %v\n", err)
 		os.Exit(1)
@@ -33,20 +39,20 @@ func main() {
 	}
 
 	if *testAlert {
-		notifier := NewTelegramNotifier(cfg.TelegramBotToken, cfg.TelegramChatIDs)
-		notifier.cfg = cfg
+		notifier := bot.NewTelegramNotifier(cfg.TelegramBotToken, cfg.TelegramChatIDs)
+		notifier.SetUI(nil, cfg)
 		notifier.SendTestAlert()
 		return
 	}
 
 	if *testURL != "" {
-		client, err := NewOLXClient()
+		client, err := olx.NewOLXClient()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Ошибка создания TLS клиента: %v\n", err)
 			os.Exit(1)
 		}
-		notifier := NewTelegramNotifier(cfg.TelegramBotToken, cfg.TelegramChatIDs)
-		notifier.cfg = cfg
+		notifier := bot.NewTelegramNotifier(cfg.TelegramBotToken, cfg.TelegramChatIDs)
+		notifier.SetUI(nil, cfg)
 		if err := notifier.SendTestAlertURL(client, *testURL); err != nil {
 			fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 			os.Exit(1)
@@ -54,28 +60,28 @@ func main() {
 		return
 	}
 
-	client, err := NewOLXClient()
+	client, err := olx.NewOLXClient()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Ошибка создания TLS клиента: %v\n", err)
 		os.Exit(1)
 	}
-	notifier := NewTelegramNotifier(cfg.TelegramBotToken, cfg.TelegramChatIDs)
-	checker := NewChecker(cfg, client, notifier)
-	defer checker.Close()
+	notifier := bot.NewTelegramNotifier(cfg.TelegramBotToken, cfg.TelegramChatIDs)
+	chk := checker.NewChecker(cfg, client, notifier)
+	defer chk.Close()
 
-	botUI := NewBotUI(cfg, checker)
+	botUI := bot.NewBotUI(cfg, chk)
 	notifier.SetUI(botUI, cfg)
 
 	if *once {
 		fmt.Println("⚡ Тестовый одиночный прогон...")
-		checker.CheckNow()
-		fmt.Printf("✅ Готово. В кэше: %d\n", checker.GetStats().SeenCount)
+		chk.CheckNow()
+		fmt.Printf("✅ Готово. В кэше: %d\n", chk.GetStats().SeenCount)
 		return
 	}
 
 	// Telegram-пульт кнопками (опционально)
 	if *tgUI {
-		go notifier.StartPolling(checker)
+		go notifier.StartPolling(chk)
 	}
 
 	// Красивый выход по Ctrl+C
@@ -84,10 +90,10 @@ func main() {
 	go func() {
 		<-sigChan
 		fmt.Println("\nОстановка монитора OLX...")
-		checker.Close()
+		chk.Close()
 		os.Exit(0)
 	}()
 
 	// Основной цикл мониторинга.
-	checker.Start()
+	chk.Start()
 }
