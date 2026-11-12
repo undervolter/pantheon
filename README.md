@@ -10,7 +10,6 @@
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go" alt="Go">
   <img src="https://img.shields.io/github/v/release/undervolter/pantheon?style=flat-square&color=blue" alt="Release">
   <img src="https://img.shields.io/github/license/undervolter/pantheon?style=flat-square" alt="License">
-  <img src="https://img.shields.io/github/downloads/undervolter/pantheon/total?style=flat-square&color=blue" alt="Downloads">
 <a href="https://t.me/pantheonUpdates"><img src="https://img.shields.io/badge/Telegram-%40pantheonUpdates-2CA5E0?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Updates"></a> 
   <a href="https://www.repostatus.org/#inactive"><img src="https://www.repostatus.org/badges/latest/active.svg" alt="Project Status: Active"></a>
 </p>
