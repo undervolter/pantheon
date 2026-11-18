@@ -150,3 +150,56 @@ func TestRentCategoryFilters(t *testing.T) {
 		t.Errorf("root category %d is not in TopCategories", root)
 	}
 }
+
+func TestIsRealEstate(t *testing.T) {
+	for _, id := range []int{1, 206, 1602, 1758, 1760, 3690, 3697, 28} {
+		if !IsRealEstate(id) {
+			t.Errorf("category %d must be real estate", id)
+		}
+	}
+	// 3709 «Житло подобово» is its own top-level section with type "accommodation".
+	for _, id := range []int{0, -1, 44, 73, 108, 3709, 3711, 999999} {
+		if IsRealEstate(id) {
+			t.Errorf("category %d must not be real estate", id)
+		}
+	}
+}
+
+func TestIsRealEstateOffer(t *testing.T) {
+	if !IsRealEstateOffer(999999, "real_estate") {
+		t.Error("the category type alone marks real estate, even for a leaf missing from the local tree")
+	}
+	if !IsRealEstateOffer(1758, "") {
+		t.Error("the tree position alone marks real estate")
+	}
+	if IsRealEstateOffer(3711, "accommodation") || IsRealEstateOffer(44, "electronics") {
+		t.Error("other sections are not real estate")
+	}
+}
+
+func TestVisibleTopCategoriesHideRealEstate(t *testing.T) {
+	visible := VisibleTopCategories()
+	if len(visible) != len(TopCategories)-1 {
+		t.Fatalf("visible = %d, want all %d but one", len(visible), len(TopCategories))
+	}
+	for _, c := range visible {
+		if c.ID == RealEstateCategoryID {
+			t.Fatal("real estate must not be offered")
+		}
+	}
+	// The data itself stays: this is a filter, not a removal.
+	if FindCategory(RealEstateCategoryID) == nil || FindCategory(1758) == nil {
+		t.Fatal("the catalog tree must keep the real estate categories")
+	}
+}
+
+func TestIsBrandParam(t *testing.T) {
+	if !IsBrandParam("filter_enum_digital_camera_manufacturers") {
+		t.Error("the camera manufacturers dictionary is a brand param")
+	}
+	for _, p := range []string{"", "filter_enum_color", "filter_enum_state", "category_id"} {
+		if IsBrandParam(p) {
+			t.Errorf("%q is not a brand param", p)
+		}
+	}
+}

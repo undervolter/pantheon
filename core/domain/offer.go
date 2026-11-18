@@ -12,8 +12,12 @@ import (
 	"pantheon/core/textutil"
 )
 
+// PriceValue — значение параметра "price" из ответа OLX.
 type PriceValue struct {
-	Value             float64  `json:"value"`
+	Value float64 `json:"value"`
+	// Type — "price", "arranged", "free" или "exchange". У бесплатных и
+	// обменных лотов Value равен нулю, отличает их только это поле.
+	Type              string   `json:"type"`
 	Currency          string   `json:"currency"`
 	Arranged          bool     `json:"arranged"`
 	Budget            bool     `json:"budget"`
@@ -39,7 +43,13 @@ type Photo struct {
 	Link     string `json:"link"`
 }
 
+// MaxPhotoSide — предел длинной стороны фото в алерте. OLX отдаёт оригиналы
+// до 3000×4000, а Telegram должен успеть скачать их сам, до десяти штук на
+// сообщение; крупные фото срывали отправку карточки.
+const MaxPhotoSide = 1280
+
 // URL подставляет размеры в CDN-шаблон OLX: .../image;s={width}x{height}.
+// Размер вписывается в MaxPhotoSide с сохранением пропорций.
 func (p Photo) URL() string {
 	if p.Link == "" {
 		return ""
@@ -47,6 +57,10 @@ func (p Photo) URL() string {
 	w, h := p.Width, p.Height
 	if w <= 0 || h <= 0 {
 		w, h = 600, 600
+	}
+	if long := max(w, h); long > MaxPhotoSide {
+		w = max(1, w*MaxPhotoSide/long)
+		h = max(1, h*MaxPhotoSide/long)
 	}
 	link := strings.ReplaceAll(p.Link, "{width}", strconv.Itoa(w))
 	link = strings.ReplaceAll(link, "{height}", strconv.Itoa(h))
@@ -89,6 +103,13 @@ type OfferContact struct {
 	Chat  bool   `json:"chat"`
 }
 
+// OfferCategory — категория лота из ответа OLX. Type — раздел верхнего уровня
+// ("electronics", "services", "real_estate"…), ID — листовая категория.
+type OfferCategory struct {
+	ID   int    `json:"id"`
+	Type string `json:"type"`
+}
+
 type Promotion struct {
 	TopAd         bool     `json:"top_ad"`
 	Highlighted   bool     `json:"highlighted"`
@@ -99,21 +120,22 @@ type Promotion struct {
 }
 
 type Offer struct {
-	ID              int64        `json:"id"`
-	URL             string       `json:"url"`
-	Title           string       `json:"title"`
-	CreatedTime     string       `json:"created_time"`
-	LastRefreshTime string       `json:"last_refresh_time"`
-	PushupTime      *string      `json:"pushup_time"`
-	Description     string       `json:"description"`
-	Params          []Param      `json:"params"`
-	Location        Location     `json:"location"`
-	Photos          []Photo      `json:"photos"`
-	User            OfferUser    `json:"user"`
-	Contact         OfferContact `json:"contact"`
-	Status          string       `json:"status"`
-	Business        bool         `json:"business"`
-	Promotion       Promotion    `json:"promotion"`
+	ID              int64         `json:"id"`
+	URL             string        `json:"url"`
+	Title           string        `json:"title"`
+	CreatedTime     string        `json:"created_time"`
+	LastRefreshTime string        `json:"last_refresh_time"`
+	PushupTime      *string       `json:"pushup_time"`
+	Description     string        `json:"description"`
+	Params          []Param       `json:"params"`
+	Category        OfferCategory `json:"category"`
+	Location        Location      `json:"location"`
+	Photos          []Photo       `json:"photos"`
+	User            OfferUser     `json:"user"`
+	Contact         OfferContact  `json:"contact"`
+	Status          string        `json:"status"`
+	Business        bool          `json:"business"`
+	Promotion       Promotion     `json:"promotion"`
 }
 
 func (o *Offer) IsTopAd() bool {
@@ -150,7 +172,38 @@ func formatIntWithSpaces(n int64) string {
 	return string(out)
 }
 
-func (o *Offer) GetPrice() string {
+// PriceKind — что продавец указал в поле цены.
+type PriceKind int
+
+const (
+	PriceNone     PriceKind = iota // цены нет вовсе (услуги, вакансии) или она нераспознана
+	PriceAmount                    // сумма, возможно с пометкой «договорная»
+	PriceIsFree                    // «Безкоштовно»
+	PriceExchange                  // «Обмін»
+	PriceArranged                  // «Договірна» без суммы
+)
+
+// PriceWords — слова для текста цены на языке получателя.
+type PriceWords struct {
+	UAH            string // "грн."
+	NegotiableNote string // "договірна" — пометка рядом с суммой
+	Negotiable     string // "Договірна" — вместо суммы
+	Free           string // "Безкоштовно"
+	Exchange       string // "Обмін"
+	Unspecified    string // "Не вказана"
+}
+
+// DefaultPriceWords — украинские слова, как на самом OLX. Используются в логе.
+var DefaultPriceWords = PriceWords{
+	UAH:            "грн.",
+	NegotiableNote: "договірна",
+	Negotiable:     "Договірна",
+	Free:           "Безкоштовно",
+	Exchange:       "Обмін",
+	Unspecified:    "Не вказана",
+}
+
+func (o *Offer) priceValue() (PriceValue, bool) {
 	for _, p := range o.Params {
 		if p.Key != "price" {
 			continue
@@ -159,55 +212,96 @@ func (o *Offer) GetPrice() string {
 		if err := json.Unmarshal(p.Value, &pv); err != nil {
 			continue
 		}
-
-		if pv.Value > 0 {
-			curr := strings.ToUpper(strings.TrimSpace(pv.Currency))
-			valInt := int64(math.Round(pv.Value))
-			note := ""
-			if pv.Arranged {
-				note = " (договірна)"
-			}
-
-			switch curr {
-			case "USD":
-				if pv.ConvertedValue != nil && *pv.ConvertedValue > 0 {
-					convInt := int64(math.Round(*pv.ConvertedValue))
-					return fmt.Sprintf("$%s (~%s грн.)", formatIntWithSpaces(valInt), formatIntWithSpaces(convInt)) + note
-				}
-				return fmt.Sprintf("$%s", formatIntWithSpaces(valInt)) + note
-
-			case "EUR":
-				if pv.ConvertedValue != nil && *pv.ConvertedValue > 0 {
-					convInt := int64(math.Round(*pv.ConvertedValue))
-					return fmt.Sprintf("€%s (~%s грн.)", formatIntWithSpaces(valInt), formatIntWithSpaces(convInt)) + note
-				}
-				return fmt.Sprintf("€%s", formatIntWithSpaces(valInt)) + note
-
-			case "UAH", "":
-				// Для цен в гривне от 500 грн добавляем ориентир в долларах по курсу ~45.3
-				if valInt >= 500 {
-					approxUSD := int64(math.Round(float64(valInt) / 45.3))
-					return fmt.Sprintf("%s грн. (~$%s)", formatIntWithSpaces(valInt), formatIntWithSpaces(approxUSD)) + note
-				}
-				return fmt.Sprintf("%s грн.", formatIntWithSpaces(valInt)) + note
-
-			default:
-				return fmt.Sprintf("%s %s", formatIntWithSpaces(valInt), pv.Currency) + note
-			}
-		}
-
-		if pv.Arranged {
-			return "Договірна"
-		}
-		if pv.Budget {
-			return "Безкоштовно"
-		}
-		if pv.Label != "" {
-			return pv.Label
-		}
+		return pv, true
 	}
-	return "Не вказана"
+	return PriceValue{}, false
 }
+
+// PriceKind определяет вид цены. Основной признак — поле type; флаги и
+// подпись остаются запасным путём для ответов, где type не пришёл.
+func (o *Offer) PriceKind() PriceKind {
+	pv, ok := o.priceValue()
+	if !ok {
+		return PriceNone
+	}
+	switch strings.ToLower(strings.TrimSpace(pv.Type)) {
+	case "free":
+		return PriceIsFree
+	case "exchange":
+		return PriceExchange
+	}
+	if pv.Value > 0 {
+		return PriceAmount
+	}
+	if pv.Arranged || strings.EqualFold(pv.Type, "arranged") {
+		return PriceArranged
+	}
+	switch strings.ToLower(strings.TrimSpace(pv.Label)) {
+	case "безкоштовно", "бесплатно":
+		return PriceIsFree
+	case "обмін", "обмен":
+		return PriceExchange
+	}
+	return PriceNone
+}
+
+// IsFree сообщает, что лот отдают бесплатно.
+func (o *Offer) IsFree() bool { return o.PriceKind() == PriceIsFree }
+
+// FormatPrice возвращает цену строкой на языке получателя.
+func (o *Offer) FormatPrice(w PriceWords) string {
+	pv, _ := o.priceValue()
+	switch o.PriceKind() {
+	case PriceIsFree:
+		return w.Free
+	case PriceExchange:
+		return w.Exchange
+	case PriceArranged:
+		return w.Negotiable
+	case PriceNone:
+		if label := strings.TrimSpace(pv.Label); label != "" {
+			return label
+		}
+		return w.Unspecified
+	}
+
+	curr := strings.ToUpper(strings.TrimSpace(pv.Currency))
+	valInt := int64(math.Round(pv.Value))
+	note := ""
+	if pv.Arranged {
+		note = " (" + w.NegotiableNote + ")"
+	}
+
+	switch curr {
+	case "USD":
+		if pv.ConvertedValue != nil && *pv.ConvertedValue > 0 {
+			convInt := int64(math.Round(*pv.ConvertedValue))
+			return fmt.Sprintf("$%s (~%s %s)", formatIntWithSpaces(valInt), formatIntWithSpaces(convInt), w.UAH) + note
+		}
+		return fmt.Sprintf("$%s", formatIntWithSpaces(valInt)) + note
+
+	case "EUR":
+		if pv.ConvertedValue != nil && *pv.ConvertedValue > 0 {
+			convInt := int64(math.Round(*pv.ConvertedValue))
+			return fmt.Sprintf("€%s (~%s %s)", formatIntWithSpaces(valInt), formatIntWithSpaces(convInt), w.UAH) + note
+		}
+		return fmt.Sprintf("€%s", formatIntWithSpaces(valInt)) + note
+
+	case "UAH", "":
+		// Для цен в гривне от 500 грн добавляем ориентир в долларах по курсу ~45.3
+		if valInt >= 500 {
+			approxUSD := int64(math.Round(float64(valInt) / 45.3))
+			return fmt.Sprintf("%s %s (~$%s)", formatIntWithSpaces(valInt), w.UAH, formatIntWithSpaces(approxUSD)) + note
+		}
+		return fmt.Sprintf("%s %s", formatIntWithSpaces(valInt), w.UAH) + note
+
+	default:
+		return fmt.Sprintf("%s %s", formatIntWithSpaces(valInt), pv.Currency) + note
+	}
+}
+
+// GetPrice возвращает цену украинскими словами OLX — для лога и журнала.
+func (o *Offer) GetPrice() string { return o.FormatPrice(DefaultPriceWords) }
 
 // ParamKV — пара «характеристика → значение» для карточки.
 type ParamKV struct {

@@ -466,7 +466,7 @@ func (t *TelegramNotifier) handleMessage(msg *TGMessage) {
 			return
 		}
 		idStr := strconv.FormatInt(id, 10)
-		added, err := t.cfg.AddTrustedChatID(idStr, 0)
+		added, err := t.cfg.AddTrustedChatID(idStr)
 		if err != nil {
 			_ = t.sendMessage(chatID, fmt.Sprintf("❌ Не удалось сохранить: %v", err), nil)
 			return
@@ -532,7 +532,7 @@ func (t *TelegramNotifier) handleMessage(msg *TGMessage) {
 			_ = t.sendMessage(chatID, "⛔ Привязать чат может только владелец бота.", nil)
 			return
 		}
-		added, err := t.cfg.AddTrustedChatID(chatID, 0)
+		added, err := t.cfg.AddTrustedChatID(chatID)
 		if err != nil {
 			_ = t.sendMessage(chatID, fmt.Sprintf("❌ Не удалось сохранить: %v", err), nil)
 			return
@@ -1622,7 +1622,7 @@ func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 			answerAlert("Это личный чат — он уже получатель алертов. Кнопка нужна внутри группы или канала.")
 			break
 		}
-		added, err := t.cfg.AddTrustedChatID(chatID, 0)
+		added, err := t.cfg.AddTrustedChatID(chatID)
 		if err != nil {
 			answerAlert(fmt.Sprintf("❌ Не удалось сохранить: %v", err))
 			break

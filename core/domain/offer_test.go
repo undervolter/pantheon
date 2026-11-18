@@ -113,3 +113,81 @@ func TestDisplayParams(t *testing.T) {
 		t.Errorf("param[2] = %+v", got[2])
 	}
 }
+
+func offerWithPrice(t *testing.T, value string) Offer {
+	t.Helper()
+	var params []Param
+	raw := `[{"key":"price","name":"Ціна","type":"price","value":` + value + `}]`
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatal(err)
+	}
+	return Offer{Params: params}
+}
+
+// The shapes below are copied from live OLX responses: a free listing has
+// value 0 and budget=false, only "type" tells it from a missing price.
+func TestPriceKindFromLiveShapes(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		kind  PriceKind
+		text  string
+	}{
+		{"free", `{"value":0,"type":"free","arranged":false,"budget":false,"currency":"UAH","label":"Безкоштовно"}`, PriceIsFree, "Безкоштовно"},
+		{"exchange", `{"value":0,"type":"exchange","arranged":false,"budget":false,"currency":"UAH","label":"Обмін"}`, PriceExchange, "Обмін"},
+		{"amount", `{"value":4500,"type":"price","currency":"UAH","label":"4 500 грн."}`, PriceAmount, "4 500 грн. (~$99)"},
+		{"arranged with amount", `{"value":4000,"type":"arranged","arranged":true,"currency":"UAH"}`, PriceAmount, "4 000 грн. (~$88) (договірна)"},
+		{"arranged without amount", `{"value":0,"arranged":true,"label":"Договірна"}`, PriceArranged, "Договірна"},
+		{"free by label only", `{"value":0,"label":"Безкоштовно"}`, PriceIsFree, "Безкоштовно"},
+		{"budget flag is not free", `{"value":0,"budget":true,"label":""}`, PriceNone, "Не вказана"},
+	}
+	for _, c := range cases {
+		o := offerWithPrice(t, c.value)
+		if got := o.PriceKind(); got != c.kind {
+			t.Errorf("%s: PriceKind = %d, want %d", c.name, got, c.kind)
+		}
+		if got := o.GetPrice(); got != c.text {
+			t.Errorf("%s: GetPrice = %q, want %q", c.name, got, c.text)
+		}
+	}
+
+	none := Offer{}
+	if none.PriceKind() != PriceNone || none.IsFree() {
+		t.Error("an offer without a price param has no price")
+	}
+}
+
+func TestFormatPriceUsesTheGivenWords(t *testing.T) {
+	ru := PriceWords{UAH: "грн", NegotiableNote: "договорная", Negotiable: "Договорная", Free: "Бесплатно", Exchange: "Обмен", Unspecified: "Не указана"}
+	free := offerWithPrice(t, `{"value":0,"type":"free","label":"Безкоштовно"}`)
+	if got := free.FormatPrice(ru); got != "Бесплатно" {
+		t.Errorf("free in ru = %q", got)
+	}
+	usd := offerWithPrice(t, `{"value":100,"type":"price","currency":"USD","converted_value":4530}`)
+	if got := usd.FormatPrice(ru); got != "$100 (~4 530 грн)" {
+		t.Errorf("usd in ru = %q", got)
+	}
+}
+
+func TestPhotoURLIsCappedForTelegram(t *testing.T) {
+	// 3024×4032 is the largest original seen in a live sample; Telegram has to
+	// download up to ten of these itself.
+	p := Photo{Width: 3024, Height: 4032, Link: "https://x/image;s={width}x{height}"}
+	if got := p.URL(); got != "https://x/image;s=960x1280" {
+		t.Errorf("portrait URL = %q, want the long side capped at %d", got, MaxPhotoSide)
+	}
+	p = Photo{Width: 4096, Height: 3072, Link: "https://x/image;s={width}x{height}"}
+	if got := p.URL(); got != "https://x/image;s=1280x960" {
+		t.Errorf("landscape URL = %q", got)
+	}
+}
+
+func TestOfferCategoryIsParsed(t *testing.T) {
+	var o Offer
+	if err := json.Unmarshal([]byte(`{"id":1,"category":{"id":1758,"type":"real_estate"}}`), &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Category.ID != 1758 || o.Category.Type != "real_estate" {
+		t.Errorf("category = %+v", o.Category)
+	}
+}
