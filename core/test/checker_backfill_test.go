@@ -75,8 +75,8 @@ func TestAlertStartupGrace(t *testing.T) {
 		maxAge int
 		want   time.Duration
 	}{
-		{0, 15 * time.Minute},
-		{5, 15 * time.Minute},
+		{0, 20 * time.Minute},
+		{5, 20 * time.Minute},
 		{20, 20 * time.Minute},
 		{60, 60 * time.Minute},
 	}

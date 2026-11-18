@@ -4,39 +4,26 @@
 *.dll
 *.so
 *.dylib
-olx_checker_linux
+/pantheon
 
-# Local cache & tokens
+# Local config (holds the bot token) and state
+config.json
+*.bak
+*.tmp
 seen_ids.txt
-tokens.json
+seen_ids.txt.migrated
+pantheon.db
+pantheon.db-shm
+pantheon.db-wal
+pantheon.lock
 
-# Reseller detector state (contains local titles/descriptions)
-reseller_log.jsonl
-seller_stats.json
-seller_templates.json
-seller_templates.json.tmp
-seller_stats.json.tmp
-reseller_log.jsonl.tmp
-
-# Self-updater state and release artifacts
-update_state.json
-update_state.json.tmp
-*.prev
-*.failed
-update_ed25519.key
-update_ed25519.pub
+# Release artifacts
 dist/
-
-# Heavy APK / XAPK files (decompiled assets are stored separately)
-*.apk
-*.xapk
-*.zip
 
 # OS / Editor artifacts
 .DS_Store
 Thumbs.db
 *.swp
-*.tmp
 
 # Local logs
 log

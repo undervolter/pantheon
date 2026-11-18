@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -94,8 +95,9 @@ func LoadConfig(filename string) (*Config, error) {
 	cfg.RichAlerts = true
 	// По умолчанию не алертим старые лоты, которые просто подняли.
 	cfg.SkipBumpedOld = true
-	// И не алертим лоты старше 20 минут к моменту проверки.
-	cfg.MaxAlertAgeMin = 20
+	// И не алертим лоты старше 30 минут к моменту проверки. Меньше нельзя:
+	// OLX индексирует лот через 10–18 минут после публикации.
+	cfg.MaxAlertAgeMin = 30
 	// Характеристики в карточке.
 	cfg.ShowParams = true
 	// 0 = без ограничений (все характеристики)
@@ -108,6 +110,9 @@ func LoadConfig(filename string) (*Config, error) {
 
 	if cfg.IntervalSeconds <= 0 {
 		cfg.IntervalSeconds = 15
+	}
+	if cfg.IntervalSeconds < 3 {
+		cfg.IntervalSeconds = 3
 	}
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 4
@@ -145,18 +150,27 @@ func (c *Config) SetFilePath(p string) {
 }
 
 func (c *Config) Save() error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.saveLocked()
 }
 
-// saveLocked пишет конфиг на диск. Вызывать только под c.mu (Lock или RLock).
+// saveLocked пишет конфиг на диск атомарно: во временный файл и rename.
+// Вызывать только под c.mu.Lock — два писателя делили бы один tmp-файл.
 func (c *Config) saveLocked() error {
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(c.filePath, data, 0644)
+	tmp := c.filePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, c.filePath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func (c *Config) GetSearches() []SearchConfig {
@@ -291,7 +305,8 @@ func (c *Config) AutoAuthorizeChatID(chatID string, maxValid int) (bool, error) 
 	valid := make([]string, 0, len(c.TelegramChatIDs))
 	for _, id := range c.TelegramChatIDs {
 		id = strings.TrimSpace(id)
-		if id == "" || id == "YOUR_CHAT_ID_HERE" || id == "HOMIE_CHAT_ID_HERE" {
+		// Плейсхолдеры и любой нечисловой мусор слот не занимают.
+		if n, err := strconv.ParseInt(id, 10, 64); err != nil || n == 0 {
 			continue
 		}
 		if id == chatID {

@@ -116,3 +116,56 @@ func TestLoadConfigBackfillDefaults(t *testing.T) {
 		t.Error("SetBackfillEnabled(true) failed")
 	}
 }
+
+func TestAutoAuthorizeIgnoresPlaceholders(t *testing.T) {
+	cfg := &config.Config{TelegramChatIDs: []string{"your_chat_id", "YOUR_CHAT_ID_HERE", ""}}
+	cfg.SetFilePath(filepath.Join(t.TempDir(), "config.json"))
+
+	for _, id := range []string{"111", "222"} {
+		added, err := cfg.AutoAuthorizeChatID(id, 2)
+		if err != nil || !added {
+			t.Fatalf("AutoAuthorizeChatID(%s) = %v, %v; placeholders must not take a slot", id, added, err)
+		}
+	}
+	if added, err := cfg.AutoAuthorizeChatID("333", 2); err == nil || added {
+		t.Fatalf("third user must be refused, got added=%v err=%v", added, err)
+	}
+}
+
+func TestSaveIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := &config.Config{TelegramBotToken: "t", IntervalSeconds: 10}
+	cfg.SetFilePath(path)
+
+	if err := cfg.SetInterval(7); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("temporary file must not be left behind: %v", err)
+	}
+	reloaded, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.GetInterval() != 7 {
+		t.Errorf("interval = %d, want 7", reloaded.GetInterval())
+	}
+}
+
+func TestLoadConfigClampsInterval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"interval_seconds":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GetInterval() != 3 {
+		t.Errorf("interval = %d, want 3 (the floor)", cfg.GetInterval())
+	}
+	if cfg.GetMaxAlertAgeMin() != 30 {
+		t.Errorf("max_alert_age_min default = %d, want 30", cfg.GetMaxAlertAgeMin())
+	}
+}

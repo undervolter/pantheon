@@ -1,19 +1,15 @@
 {
-  "telegram_bot_token": "your_tgbot_api",
-  "telegram_chat_ids": [
-    "your_chat_id"
-  ],
+  "telegram_bot_token": "",
+  "telegram_chat_ids": [],
   "interval_seconds": 10,
   "notify_on_startup": false,
-  "searches": [
-
-  ],
+  "searches": [],
   "concurrency": 4,
   "send_photos": true,
-  "max_photos": 10,
+  "max_photos": 5,
   "rich_alerts": true,
   "skip_bumped_old": true,
-  "max_alert_age_min": 10,
+  "max_alert_age_min": 30,
   "show_params": true,
   "fetch_limit": 35,
   "ansi_hyperlinks": true

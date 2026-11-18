@@ -14,7 +14,6 @@ import (
 	"pantheon/core/version"
 )
 
-
 type Notifier interface {
 	NotifyNewOffer(offer olx.Offer, filterName, ownerChatID string)
 	GetSentCount() int64
@@ -30,12 +29,12 @@ type CheckerStats struct {
 }
 
 type Checker struct {
-	cfg *config.Config
-	client *olx.OLXClient
-	notifier Notifier
+	cfg       *config.Config
+	client    *olx.OLXClient
+	notifier  Notifier
 	startedAt time.Time
 	seenMu    sync.RWMutex
-	SeenIDs map[string]bool
+	SeenIDs   map[string]bool
 	seenFile  string
 	seenFh    *os.File
 	seenBuf   *bufio.Writer
@@ -367,7 +366,9 @@ func (c *Checker) setFrontier(key string, t time.Time) {
 	}
 }
 
-const defaultStartupGrace = 15 * time.Minute
+// Меньше 20 минут нельзя: OLX индексирует лот через 10–18 минут после
+// публикации, и свежий лот отсекался бы как «Outdated».
+const defaultStartupGrace = 20 * time.Minute
 
 func alertStartupGrace(maxAlertAgeMin int) time.Duration {
 	grace := defaultStartupGrace
@@ -629,14 +630,13 @@ func (c *Checker) checkAll(isInitial bool) {
 	}
 }
 
-
-func (c *Checker) SaveSeenID(id int64, ownerChatID string) { c.saveSeenID(id, ownerChatID) }
+func (c *Checker) SaveSeenID(id int64, ownerChatID string)  { c.saveSeenID(id, ownerChatID) }
 func (c *Checker) IsSeen(id int64, ownerChatID string) bool { return c.isSeen(id, ownerChatID) }
-func SearchKey(s config.SearchConfig) string { return searchKey(s) }
-func AlertStartupGrace(maxAlertAgeMin int) time.Duration { return alertStartupGrace(maxAlertAgeMin) }
-func PageOldestRefresh(offers []olx.Offer) time.Time { return pageOldestRefresh(offers) }
-func PageNewestRefresh(offers []olx.Offer) time.Time { return pageNewestRefresh(offers) }
-func PageReached(offers []olx.Offer, prev time.Time) bool { return pageReached(offers, prev) }
+func SearchKey(s config.SearchConfig) string                { return searchKey(s) }
+func AlertStartupGrace(maxAlertAgeMin int) time.Duration    { return alertStartupGrace(maxAlertAgeMin) }
+func PageOldestRefresh(offers []olx.Offer) time.Time        { return pageOldestRefresh(offers) }
+func PageNewestRefresh(offers []olx.Offer) time.Time        { return pageNewestRefresh(offers) }
+func PageReached(offers []olx.Offer, prev time.Time) bool   { return pageReached(offers, prev) }
 
 func (c *Checker) Client() *olx.OLXClient { return c.client }
 

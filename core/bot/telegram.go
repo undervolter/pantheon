@@ -1,16 +1,17 @@
 package bot
 
 import (
-	"pantheon/core/config"
-	"pantheon/core/olx"
-	"pantheon/core/checker"
-	"pantheon/core/version"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
+	"pantheon/core/checker"
+	"pantheon/core/config"
+	"pantheon/core/olx"
+	"pantheon/core/version"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,7 +71,7 @@ type TelegramNotifier struct {
 	botToken   string
 	chatIDs    []string
 	httpClient *http.Client
-	cfg *config.Config
+	cfg        *config.Config
 	ui         *BotUI
 	sentCount  int64
 
@@ -91,6 +92,19 @@ func NewTelegramNotifier(botToken string, chatIDs []string) *TelegramNotifier {
 		deadChats: make(map[string]string),
 		lastSend:  make(map[string]time.Time),
 	}
+}
+
+// scrub убирает токен бота из текста ошибки: *url.Error несёт полный URL
+// запроса, а он попадает в лог при каждом таймауте.
+func (t *TelegramNotifier) scrub(err error) error {
+	if err == nil || t.botToken == "" {
+		return err
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, t.botToken) {
+		return err
+	}
+	return errors.New(strings.ReplaceAll(msg, t.botToken, "<token>"))
 }
 
 func (t *TelegramNotifier) GetSentCount() int64 {
@@ -700,7 +714,6 @@ func (t *TelegramNotifier) handleMessage(msg *TGMessage) {
 		return
 	}
 
-
 	// По умолчанию выдаем главное меню
 	menuText, km := t.ui.RenderMainMenu(chatID)
 	_ = t.sendMessage(chatID, menuText, km)
@@ -840,7 +853,9 @@ func (t *TelegramNotifier) finishBrandStep(chatID string, msgID, catID int) {
 
 func (t *TelegramNotifier) handleCallback(cq *CallbackQuery) {
 	authID := strconv.FormatInt(cq.From.ID, 10)
-	if !t.isAuthorized(authID) {
+	// Кнопку может нажать кто угодно из группы, где висит меню. Колбэк
+	// никогда не привязывает нового пользователя — только строгая проверка.
+	if t.cfg != nil && !t.cfg.IsAuthorized(authID) {
 		_ = t.answerCallbackAlert(cq.ID, "⛔ Доступ запрещен!")
 		return
 	}
@@ -1666,7 +1681,7 @@ func (t *TelegramNotifier) sendRawMessage(chatID, text, parseMode string, km *In
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		return err
+		return t.scrub(err)
 	}
 	defer resp.Body.Close()
 
@@ -1728,7 +1743,7 @@ func (t *TelegramNotifier) postTelegramJSON(method string, payload interface{}) 
 
 		resp, err := t.httpClient.Do(req)
 		if err != nil {
-			return err
+			return t.scrub(err)
 		}
 
 		respBody, _ := io.ReadAll(resp.Body)
@@ -1885,7 +1900,7 @@ func (t *TelegramNotifier) editMessageText(chatID string, messageID int, text st
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		return err
+		return t.scrub(err)
 	}
 	defer resp.Body.Close()
 
@@ -1929,7 +1944,7 @@ func (t *TelegramNotifier) answerCallbackQuery(callbackID, text string) error {
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		return err
+		return t.scrub(err)
 	}
 	defer resp.Body.Close()
 	return nil
@@ -1950,7 +1965,7 @@ func (t *TelegramNotifier) answerCallbackAlert(callbackID, text string) error {
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		return err
+		return t.scrub(err)
 	}
 	defer resp.Body.Close()
 	return nil
@@ -1971,7 +1986,7 @@ func (t *TelegramNotifier) getUpdates(offset int) ([]TGUpdate, error) {
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, t.scrub(err)
 	}
 	defer resp.Body.Close()
 
@@ -1991,7 +2006,6 @@ func (t *TelegramNotifier) getUpdates(offset int) ([]TGUpdate, error) {
 
 	return tgResp.Result, nil
 }
-
 
 const (
 	TelegramChatGap  = telegramChatGap

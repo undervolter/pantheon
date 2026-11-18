@@ -22,14 +22,15 @@ sudo chown -R pantheon:pantheon /opt/pantheon
 
 ## 3. Установка файлов
 
-Скопируйте бинарник и файлы конфигурации:
+Скопируйте бинарник и пример конфигурации:
 
 ```bash
 sudo install -m 0755 pantheon /opt/pantheon/pantheon
-sudo cp config.example.json /opt/pantheon/config.json
-sudo cp filters_meta.json /opt/pantheon/filters_meta.json
+sudo install -m 0600 config.example.json /opt/pantheon/config.json
 sudo chown -R pantheon:pantheon /opt/pantheon
 ```
+
+Справочник фильтров OLX встроен в бинарник, отдельно его копировать не нужно.
 
 Отредактируйте `/opt/pantheon/config.json`, указав токен вашего Telegram-бота:
 ```bash

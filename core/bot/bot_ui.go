@@ -1,12 +1,12 @@
 package bot
 
 import (
-	"pantheon/core/config"
-	"pantheon/core/olx"
-	"pantheon/core/checker"
-	"pantheon/core/version"
 	"fmt"
 	"html"
+	"pantheon/core/checker"
+	"pantheon/core/config"
+	"pantheon/core/olx"
+	"pantheon/core/version"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,7 +37,7 @@ type UserWizardState struct {
 }
 
 type BotUI struct {
-	cfg *config.Config
+	cfg     *config.Config
 	checker *checker.Checker
 	states  map[string]*UserWizardState
 	stateMu sync.Mutex
@@ -1233,8 +1233,6 @@ func onOff(v bool) string {
 	return "ВЫКЛ"
 }
 
-
-
 func (ui *BotUI) SearchForChat(chatID string, index int) (config.SearchConfig, bool) {
 	return ui.searchForChat(chatID, index)
 }
@@ -1252,14 +1250,12 @@ func (ui *BotUI) CategoryFilters(categoryID int, brandParam string) []olx.Filter
 	return ui.categoryFilters(categoryID, brandParam)
 }
 
-
 func brandDisplay(draft config.SearchConfig) string {
 	if len(draft.BrandNames) > 0 {
 		return strings.Join(draft.BrandNames, ", ")
 	}
 	return draft.BrandName
 }
-
 
 // parsePriceRange разбирает пользовательский ввод диапазона цены:
 // "5000-20000", "5 000 – 20 000", "от 5000 до 20000", "до 20000", "от 5000", "5000".
