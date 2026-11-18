@@ -10,6 +10,7 @@ func init() {
 		"common.all_ukraine": {RU: "вся Украина", UK: "вся Україна", EN: "all of Ukraine"},
 		"common.stale":       {RU: "Это меню устарело, открываю актуальное", UK: "Це меню застаріло, відкриваю актуальне", EN: "This menu is outdated, here is a fresh one"},
 		"common.stale_keep":  {RU: "Эта кнопка устарела — продолжай в последнем сообщении", UK: "Ця кнопка застаріла — продовжуй в останньому повідомленні", EN: "This button is outdated — continue in the latest message"},
+		"common.not_yours":   {RU: "Это сообщение — чужой черновик. Свой фильтр начни командой /add.", UK: "Це повідомлення — чужа чернетка. Свій фільтр почни командою /add.", EN: "This message is someone else's draft. Start your own filter with /add."},
 		"common.denied":      {RU: "⛔ Нет доступа", UK: "⛔ Немає доступу", EN: "⛔ Access denied"},
 		"common.admin_only":  {RU: "⛔ Это доступно только администратору бота.", UK: "⛔ Це доступно лише адміністратору бота.", EN: "⛔ Only the bot admin can do this."},
 		"common.save_failed": {RU: "❌ Не удалось сохранить: %s", UK: "❌ Не вдалося зберегти: %s", EN: "❌ Could not save: %s"},
@@ -335,7 +336,6 @@ func init() {
 		"cmd.connected":       {RU: "✅ <b>Pantheon подключён к этому чату.</b>", UK: "✅ <b>Pantheon підключено до цього чату.</b>", EN: "✅ <b>Pantheon is connected to this chat.</b>"},
 		"cmd.bound":           {RU: "✅ <b>Группа привязана.</b> Сюда будут приходить алерты общих фильтров и фильтров, созданных здесь.", UK: "✅ <b>Групу прив'язано.</b> Сюди надходитимуть алерти спільних фільтрів і фільтрів, створених тут.", EN: "✅ <b>Group linked.</b> Alerts of shared filters and of filters created here will arrive in it."},
 		"cmd.unbound":         {RU: "🗑 Группа отвязана. Её фильтров поставлено на паузу: %d.", UK: "🗑 Групу відв'язано. Її фільтрів поставлено на паузу: %d.", EN: "🗑 Group unlinked. Its filters paused: %d."},
-		"cmd.not_bound":       {RU: "Эта группа и так не привязана.", UK: "Цю групу і так не прив'язано.", EN: "This group is not linked anyway."},
 
 		// ---------- access ----------
 		"acc.stranger": {RU: "⛔ Доступ закрыт.\nТвой chat_id: <code>%s</code> — передай его администратору бота.", UK: "⛔ Доступ закрито.\nТвій chat_id: <code>%s</code> — передай його адміністратору бота.", EN: "⛔ Access is closed.\nYour chat_id: <code>%s</code> — pass it to the bot admin."},

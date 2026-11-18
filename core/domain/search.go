@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -26,7 +27,23 @@ const (
 	MaxExcludeWords = 20
 	MaxExcludeRunes = 40
 	MaxVariants     = 20
+	// Названия города, района, категории и бренда приходят из каталога, но
+	// файл импорта может принести что угодно.
+	MaxLabelRunes = 80
+	// Пределы доп. фильтров: ключей, значений на ключ и длины значения.
+	MaxFilterKeys   = 60
+	MaxFilterValues = 100
+	MaxValueRunes   = 64
+	// MaxFilterNumber — потолок для цены и границ числовых фильтров.
+	MaxFilterNumber = 1e12
 )
+
+// ValidNumber сообщает, что число годится для цены или границы диапазона:
+// конечное, неотрицательное и не абсурдно большое. NaN и ±Inf не сохраняются
+// в базе и не кодируются в JSON.
+func ValidNumber(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= MaxFilterNumber
+}
 
 // FilterRange — диапазон числового фильтра (например, год или пробег).
 type FilterRange struct {
@@ -127,6 +144,8 @@ var (
 	ErrRealEstate  = errors.New("real estate categories are not served")
 	ErrBadOwner    = errors.New("unknown seller type")
 	ErrBadPrice    = errors.New("unknown price mode")
+	ErrBadNumber   = errors.New("a price or a range bound is not a usable number")
+	ErrTooLarge    = errors.New("filter has too many extra parameters")
 )
 
 // BadKeyError — параметр выдачи, который нельзя отправлять в OLX.
@@ -153,11 +172,19 @@ func (s *Search) Normalize() {
 	s.OwnerChatID = strings.TrimSpace(s.OwnerChatID)
 	// 0.1.x хранил названия вместе со значком («📍 Київ», «🌍 Полтавська
 	// область»). Значок — оформление, его добавляет экран.
-	s.CityName = strings.TrimSpace(strings.TrimLeft(s.CityName, "📍🌍🇺🇦 "))
-	s.DistrictName = strings.TrimSpace(s.DistrictName)
-	s.CatName = strings.TrimSpace(s.CatName)
+	s.CityName = label(strings.TrimLeft(s.CityName, "📍🌍🇺🇦 "))
+	s.DistrictName = label(s.DistrictName)
+	s.CatName = label(s.CatName)
+	s.BrandName = label(s.BrandName)
+	s.BrandValue = label(s.BrandValue)
+	for i := range s.BrandNames {
+		s.BrandNames[i] = label(s.BrandNames[i])
+	}
+	if len(s.BrandNames) > MaxFilterValues {
+		s.BrandNames = s.BrandNames[:MaxFilterValues]
+	}
 
-	s.QueryVariants = uniqueNonEmpty(s.QueryVariants, MaxVariants, 0)
+	s.QueryVariants = uniqueNonEmpty(s.QueryVariants, MaxVariants, MaxQueryRunes)
 	s.ExcludeWords = uniqueNonEmpty(s.ExcludeWords, MaxExcludeWords, MaxExcludeRunes)
 
 	if s.MinPrice < 0 {
@@ -174,7 +201,7 @@ func (s *Search) Normalize() {
 	}
 
 	for key, values := range s.Filters {
-		clean := uniqueNonEmpty(values, 0, 0)
+		clean := uniqueNonEmpty(values, MaxFilterValues, MaxValueRunes)
 		if len(clean) == 0 {
 			delete(s.Filters, key)
 			continue
@@ -193,10 +220,15 @@ func (s *Search) Normalize() {
 		s.Ranges = nil
 	}
 
-	s.BrandValues = uniqueNonEmpty(s.BrandValues, 0, 0)
+	s.BrandValues = uniqueNonEmpty(s.BrandValues, MaxFilterValues, MaxValueRunes)
 	if len(s.BrandValues) == 0 && s.BrandValue == "" {
 		s.BrandParam, s.BrandName, s.BrandNames = "", "", nil
 	}
+}
+
+// label приводит название к одной строке ограниченной длины.
+func label(v string) string {
+	return textutil.TruncateRunes(strings.Join(strings.Fields(v), " "), MaxLabelRunes)
 }
 
 func uniqueNonEmpty(list []string, maxItems, maxRunes int) []string {
@@ -244,14 +276,23 @@ func (s Search) Validate() error {
 	default:
 		return ErrBadPrice
 	}
+	if !ValidNumber(s.MinPrice) || !ValidNumber(s.MaxPrice) {
+		return ErrBadNumber
+	}
+	if len(s.Filters) > MaxFilterKeys || len(s.Ranges) > MaxFilterKeys {
+		return ErrTooLarge
+	}
 	for key := range s.Filters {
 		if !ValidFilterKey(key) {
 			return &BadKeyError{Key: key}
 		}
 	}
-	for key := range s.Ranges {
+	for key, r := range s.Ranges {
 		if !ValidFilterKey(key) {
 			return &BadKeyError{Key: key}
+		}
+		if !ValidNumber(r.From) || !ValidNumber(r.To) {
+			return ErrBadNumber
 		}
 	}
 	if s.BrandParam != "" && !catalog.IsBrandParam(s.BrandParam) {

@@ -25,6 +25,7 @@ const (
 	pairingCodeLen     = 8
 	maxPairingFailures = 5
 	strangerReplyEvery = time.Hour
+	pairingGuessEvery  = time.Minute
 	maxStrangersKept   = 2048
 )
 
@@ -47,14 +48,25 @@ func newPairingCode() string {
 // A config that lists user ids gets its first user as the admin, once; an
 // empty one gets a pairing code.
 func (b *Bot) preparePairing() {
+	had := len(b.cfg.Admins()) > 0
 	has, err := b.cfg.EnsureAdmin()
 	if err != nil {
 		logx.Errorf("could not store the admin: %v", err)
 	}
-	if has {
+	if !has {
+		b.issuePairingCode()
 		return
 	}
-	b.issuePairingCode()
+	if !had {
+		// Said out loud: on an install upgraded from 0.1.x the first chat in
+		// the list is whoever wrote to the bot first, which is not
+		// necessarily its owner.
+		logx.Print("")
+		logx.Print("  Admin of this bot: chat " + strings.Join(b.cfg.Admins(), ", ") + " — the first user in telegram_chat_ids.")
+		logx.Print("  The admin manages chats, bot-wide settings and shared filters. If that is not you,")
+		logx.Print("  stop the bot, put your own id into admin_chat_ids in the config and start it again.")
+		logx.Print("")
+	}
 }
 
 func (b *Bot) issuePairingCode() {

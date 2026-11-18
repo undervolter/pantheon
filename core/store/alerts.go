@@ -258,6 +258,18 @@ func (s *Store) PendingCount(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// AlertPending reports whether an alert is still waiting to be sent. The
+// sender asks right before each send: between reading a batch and reaching an
+// alert, its filter may have been deleted or its chat removed.
+func (s *Store) AlertPending(ctx context.Context, id int64) (bool, error) {
+	var status string
+	err := s.db.QueryRowContext(ctx, "SELECT status FROM alerts WHERE id = ?", id).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return status == "pending", err
+}
+
 // MarkAlertSent records a delivery. The payload is dropped: only the summary
 // columns are needed from here on.
 func (s *Store) MarkAlertSent(ctx context.Context, id int64, at time.Time) error {

@@ -151,8 +151,26 @@ func (o *Offer) IsTopAd() bool {
 	return false
 }
 
+// roundPrice превращает цену в целое число единиц. OLX присылает float;
+// битое или абсурдное значение не должно переполнить преобразование.
+func roundPrice(v float64) int64 {
+	const limit = 1e15
+	switch {
+	case math.IsNaN(v):
+		return 0
+	case v > limit:
+		return int64(limit)
+	case v < -limit:
+		return -int64(limit)
+	}
+	return int64(math.Round(v))
+}
+
 func formatIntWithSpaces(n int64) string {
 	if n < 0 {
+		if n == math.MinInt64 {
+			n++ // у MinInt64 нет положительной пары: -n осталось бы тем же числом
+		}
 		return "-" + formatIntWithSpaces(-n)
 	}
 	in := strconv.FormatInt(n, 10)
@@ -266,7 +284,7 @@ func (o *Offer) FormatPrice(w PriceWords) string {
 	}
 
 	curr := strings.ToUpper(strings.TrimSpace(pv.Currency))
-	valInt := int64(math.Round(pv.Value))
+	valInt := roundPrice(pv.Value)
 	note := ""
 	if pv.Arranged {
 		note = " (" + w.NegotiableNote + ")"
@@ -275,14 +293,14 @@ func (o *Offer) FormatPrice(w PriceWords) string {
 	switch curr {
 	case "USD":
 		if pv.ConvertedValue != nil && *pv.ConvertedValue > 0 {
-			convInt := int64(math.Round(*pv.ConvertedValue))
+			convInt := roundPrice(*pv.ConvertedValue)
 			return fmt.Sprintf("$%s (~%s %s)", formatIntWithSpaces(valInt), formatIntWithSpaces(convInt), w.UAH) + note
 		}
 		return fmt.Sprintf("$%s", formatIntWithSpaces(valInt)) + note
 
 	case "EUR":
 		if pv.ConvertedValue != nil && *pv.ConvertedValue > 0 {
-			convInt := int64(math.Round(*pv.ConvertedValue))
+			convInt := roundPrice(*pv.ConvertedValue)
 			return fmt.Sprintf("€%s (~%s %s)", formatIntWithSpaces(valInt), formatIntWithSpaces(convInt), w.UAH) + note
 		}
 		return fmt.Sprintf("€%s", formatIntWithSpaces(valInt)) + note

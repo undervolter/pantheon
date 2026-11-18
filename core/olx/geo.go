@@ -147,9 +147,10 @@ func (c *OLXClient) WarmGeoIndex() {
 	_, _ = c.geoIndex()
 }
 
-// geoIndex возвращает список всех городов по областям. В кэш попадает только
-// полностью собранный список: после сетевой ошибки следующая попытка строит
-// его заново, а не получает ту же ошибку (или огрызок) до перезапуска.
+// geoIndex возвращает список всех городов по областям. Полный список живёт
+// в кэше сутки. Неполный (часть областей не ответила) — пару минут: им можно
+// пользоваться, но он должен скоро пересобраться, а не жить до перезапуска и
+// не строиться заново на каждый запрос (это ~26 обращений к OLX).
 func (c *OLXClient) geoIndex() ([]geoEntry, error) {
 	c.geoMu.Lock()
 	defer c.geoMu.Unlock()
@@ -160,8 +161,11 @@ func (c *OLXClient) geoIndex() ([]geoEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if complete {
+	if len(entries) > 0 {
 		c.geoEntries, c.geoBuiltAt = entries, time.Now()
+		if !complete {
+			c.geoBuiltAt = c.geoBuiltAt.Add(geoPartialTTL - geoIndexTTL)
+		}
 	}
 	return entries, nil
 }

@@ -69,6 +69,9 @@ func readBodyLimited(r io.Reader, limit int64) string {
 // geoIndexTTL — как долго живёт собранный список городов.
 const geoIndexTTL = 24 * time.Hour
 
+// geoPartialTTL — сколько живёт список, собранный не полностью.
+const geoPartialTTL = 2 * time.Minute
+
 type OLXClient struct {
 	client    tls_client.HttpClient
 	userAgent string

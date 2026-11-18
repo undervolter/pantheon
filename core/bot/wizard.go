@@ -50,7 +50,7 @@ var wizardCallbacks = map[string]bool{
 	"wiz_owner": true, "add_owner": true,
 	"wiz_where": true, "add_city": true, "add_city_manual": true, "add_city_pick": true, "add_region_pick": true,
 	"add_city_whole": true, "add_district_pick": true,
-	"wiz_review": true, "add_finish": true,
+	"add_finish": true,
 }
 
 // stepPage starts a wizard screen with its progress footer.
@@ -64,6 +64,7 @@ func (t *turn) stepPage(n int, text string) *page {
 // startWizard begins a new filter, dropping whatever was unfinished.
 func (b *Bot) startWizard(t *turn) {
 	t.resetState()
+	t.wizard = true
 	t.st.Active = true
 	t.st.Brands = map[string]string{}
 	// The wizard lives in the message the button was pressed on; for a typed
@@ -809,8 +810,8 @@ func (b *Bot) wizardCallback(t *turn, name string, args []string) {
 		t.show(b.viewPrice(t))
 
 	case "add_price":
-		v, _ := strconv.ParseFloat(firstArg(args), 64)
-		if v < 0 {
+		v, err := strconv.ParseFloat(firstArg(args), 64)
+		if err != nil || !domain.ValidNumber(v) {
 			v = 0
 		}
 		d.PriceMode, d.MinPrice, d.MaxPrice = domain.PriceByRange, 0, v
@@ -892,9 +893,6 @@ func (b *Bot) wizardCallback(t *turn, name string, args []string) {
 		}
 		t.show(b.viewReview(t))
 
-	case "wiz_review":
-		t.show(b.viewReview(t))
-
 	case "add_finish":
 		b.finishWizard(t)
 	}
@@ -941,6 +939,7 @@ func (b *Bot) cityName(t *turn, cityID int, regionID *int) string {
 
 // onStepText handles the text a wizard screen asked for.
 func (b *Bot) onStepText(t *turn, text string) {
+	t.wizard = true
 	d := &t.st.Draft
 	switch t.st.Step {
 	case stepQuery:
@@ -1094,6 +1093,7 @@ func (b *Bot) onURL(t *turn, raw string) {
 	}
 
 	t.resetState()
+	t.wizard = true
 	t.st.Active = true
 	t.st.Draft = d
 	t.st.Notes = notes

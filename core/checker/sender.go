@@ -91,10 +91,30 @@ func (c *Checker) senderLoop(ctx context.Context) {
 	}
 }
 
+// forgetStale drops what the sender remembers about alerts that have left the
+// queue some other way (expired, their chat removed): without it the notes
+// would pile up for as long as the process lives.
+func (c *Checker) forgetStale() {
+	cutoff := c.now().Add(-2 * alertTTL)
+	c.sendMu.Lock()
+	for id, at := range c.noPhotos {
+		if at.Before(cutoff) {
+			delete(c.noPhotos, id)
+		}
+	}
+	for id, at := range c.unrecorded {
+		if at.Before(cutoff) {
+			delete(c.unrecorded, id)
+		}
+	}
+	c.sendMu.Unlock()
+}
+
 func (c *Checker) dispatchPending(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	c.forgetStale()
 	if n, err := c.db.ExpireAlerts(ctx, c.now().Add(-alertTTL)); err != nil {
 		if ctx.Err() == nil {
 			logx.Warnf("expire alerts: %v", err)
@@ -192,14 +212,47 @@ func (c *Checker) deliverChat(ctx context.Context, chatID string) {
 				// Left for ExpireAlerts; the rest of the batch is just as old.
 				return
 			}
+			if c.isUnrecorded(a.ID) {
+				// The card went out, but the write that records it failed, so
+				// the alert is still in the queue. It is never sent twice:
+				// only the write is tried again, and nothing else goes to
+				// this chat until it succeeds.
+				if c.markSent(a.ID) {
+					continue
+				}
+				if !sleepCtx(ctx, retryWait) {
+					return
+				}
+				if retryWait < retryWaitMax {
+					retryWait *= 2
+				}
+				retry = true
+				continue
+			}
 			if !sleepCtx(ctx, c.limiter.Reserve(chatID)) {
+				return
+			}
+			// The batch was read a moment ago. Meanwhile the alert may have been
+			// taken out of the queue: its filter deleted, its chat removed.
+			if pending, err := c.db.AlertPending(ctx, a.ID); err == nil && !pending {
+				c.forget(a.ID)
+				continue
+			} else if ctx.Err() != nil {
 				return
 			}
 
 			err := c.sendAlert(ctx, a)
+			if err != nil && ctx.Err() != nil {
+				// Interrupted by shutdown, not refused. The alert stays queued
+				// and goes out on the next start.
+				return
+			}
 			switch {
 			case err == nil:
-				c.markSent(a.ID)
+				if !c.markSent(a.ID) {
+					retry = true
+					continue
+				}
 				retryWait = retryWaitMin
 
 			case errors.Is(err, errBadPayload):
@@ -222,7 +275,7 @@ func (c *Checker) deliverChat(ctx context.Context, chatID string) {
 					// a duplicate is better than a lost alert — but without
 					// photos, the usual reason Telegram takes too long.
 					c.sendMu.Lock()
-					c.noPhotos[a.ID] = true
+					c.noPhotos[a.ID] = c.now()
 					c.sendMu.Unlock()
 				}
 				logx.Warnf("alert %d to %s failed, retry in %s: %v", a.OfferID, chatID, wait.Round(time.Second), err)
@@ -252,7 +305,7 @@ func (c *Checker) sendAlert(ctx context.Context, a store.Alert) error {
 	}
 
 	c.sendMu.Lock()
-	skipPhotos := c.noPhotos[a.ID]
+	_, skipPhotos := c.noPhotos[a.ID]
 	c.sendMu.Unlock()
 
 	opt := telegram.CardOptions{
@@ -275,16 +328,36 @@ func (c *Checker) sendAlert(ctx context.Context, a store.Alert) error {
 func (c *Checker) forget(id int64) {
 	c.sendMu.Lock()
 	delete(c.noPhotos, id)
+	delete(c.unrecorded, id)
 	c.sendMu.Unlock()
 }
 
-func (c *Checker) markSent(id int64) {
+func (c *Checker) isUnrecorded(id int64) bool {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	_, ok := c.unrecorded[id]
+	return ok
+}
+
+// markSent records a delivery. If the write fails, the alert is remembered as
+// delivered, so that it is not sent again while it is still in the queue.
+func (c *Checker) markSent(id int64) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), markTimeout)
 	defer cancel()
 	if err := c.db.MarkAlertSent(ctx, id, c.now()); err != nil {
-		logx.Errorf("record the delivery of alert %d: %v", id, err)
+		c.sendMu.Lock()
+		_, known := c.unrecorded[id]
+		if !known {
+			c.unrecorded[id] = c.now()
+		}
+		c.sendMu.Unlock()
+		if !known {
+			logx.Errorf("alert %d was delivered, but recording it failed (%v); it will not be sent again, the write is retried", id, err)
+		}
+		return false
 	}
 	c.forget(id)
+	return true
 }
 
 func (c *Checker) fail(id int64, reason string) {

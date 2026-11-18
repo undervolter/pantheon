@@ -46,6 +46,13 @@ func (b *Bot) onCallback(ctx context.Context, q *telegram.CallbackQuery) {
 		t.alert(t.tr("common.admin_only"))
 		return
 	}
+	// In a group the message may be somebody else's draft or import. Its
+	// buttons are theirs: another member neither drives it nor replaces it
+	// with a menu of their own, which would leave the draft without a screen.
+	if t.group && b.states.claimedByOther(chatID, userID, t.msgID) {
+		t.alert(t.tr("common.not_yours"))
+		return
+	}
 
 	if wizardCallbacks[name] {
 		if !t.st.Active {
@@ -56,12 +63,13 @@ func (b *Bot) onCallback(ctx context.Context, q *telegram.CallbackQuery) {
 			t.show(b.viewMain(t))
 			return
 		}
-		if t.st.MsgID != 0 && t.st.MsgID != t.msgID {
+		if t.st.MsgID != t.msgID {
 			// A button of an earlier wizard screen. The draft has moved on;
 			// acting on it from here would undo what was typed since.
 			t.toast(t.tr("common.stale_keep"))
 			return
 		}
+		t.wizard = true
 		t.st.Step = stepNone
 		b.wizardCallback(t, name, args)
 		return
@@ -135,12 +143,19 @@ func (b *Bot) menuCallback(t *turn, name string, args []string) {
 	case "export":
 		b.exportTo(t)
 
-	case "import_ok":
+	case "import_ok", "import_cancel":
+		// Only the confirmation of the file that is waiting may answer for
+		// it: the buttons under an earlier file would import a different one.
+		if len(t.st.Import) == 0 || t.st.ImportMsgID != t.msgID {
+			t.toast(t.tr("common.stale_keep"))
+			return
+		}
+		if name == "import_cancel" {
+			t.st.Import, t.st.ImportMsgID = nil, 0
+			t.show(b.viewMain(t))
+			return
+		}
 		b.confirmImport(t)
-
-	case "import_cancel":
-		t.st.Import = nil
-		t.show(b.viewMain(t))
 
 	default:
 		// A button from a build that no longer exists.

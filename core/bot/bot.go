@@ -65,6 +65,7 @@ type Bot struct {
 	states    states
 	queues    chatQueues
 	strangers throttle
+	guesses   throttle
 	now       func() time.Time
 }
 
@@ -97,14 +98,32 @@ func (b *Bot) setupCommands(ctx context.Context) {
 // Run polls Telegram until ctx is cancelled. It returns an error only when
 // polling cannot work at all (a rejected token).
 func (b *Bot) Run(ctx context.Context) error {
-	me, err := b.tg.GetMe(ctx)
-	if err != nil {
+	// The bot's own name is needed before the first update: without it a
+	// command addressed to another bot of the same group ("/start@other")
+	// could not be told from one addressed to this bot. There is nothing to
+	// poll without a connection anyway, so this waits for one.
+	for wait := time.Second; ; {
+		me, err := b.tg.GetMe(ctx)
+		if err == nil {
+			b.username = me.Username
+			break
+		}
 		if telegram.IsUnauthorized(err) {
 			return fmt.Errorf("Telegram rejected the bot token (%v): check telegram_bot_token", err)
 		}
-		logx.Warnf("[TG] getMe: %v", err)
+		if ctx.Err() != nil {
+			return nil
+		}
+		logx.Warnf("[TG] getMe: %v (retry in %s)", err, wait)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(wait):
+		}
+		if wait < maxPollBackoff {
+			wait *= 2
+		}
 	}
-	b.username = me.Username
 
 	if err := b.tg.DeleteWebhook(ctx); err != nil && ctx.Err() == nil {
 		logx.Warnf("[TG] deleteWebhook: %v", err)
@@ -265,6 +284,12 @@ type turn struct {
 	cb       *telegram.CallbackQuery
 	msgID    int
 	answered bool
+
+	// wizard is set when this update belongs to the filter wizard: only then
+	// do the pages it shows become the message the draft lives in. A help
+	// page or the main menu shown while a draft is open must not take the
+	// draft away from its own screen.
+	wizard bool
 }
 
 func (b *Bot) lang(chatID string) i18n.Lang {
@@ -293,16 +318,17 @@ func (t *turn) resetState() {
 	t.st = t.b.states.reset(stateKey(t.chatID, t.userID))
 }
 
-// send posts a page as a new message.
-func (t *turn) send(view string, km *markup) {
+// send posts a page as a new message and returns its id (0 if it failed).
+func (t *turn) send(view string, km *markup) int {
 	id, err := t.b.tg.SendPage(t.ctx, t.chatID, view, km)
 	if err != nil {
 		if t.ctx.Err() == nil {
 			logx.Warnf("[TG] send to %s: %v", t.chatID, err)
 		}
-		return
+		return 0
 	}
 	t.moveWizard(id)
+	return id
 }
 
 // show replaces the message the button was pressed on; without a message to
@@ -325,7 +351,7 @@ func (t *turn) show(view string, km *markup) {
 // moved it to a fresh message, the buttons of the previous one are removed so
 // nobody presses a stale step.
 func (t *turn) moveWizard(msgID int) {
-	if !t.st.Active || msgID == 0 || t.st.MsgID == msgID {
+	if !t.wizard || !t.st.Active || msgID == 0 || t.st.MsgID == msgID {
 		return
 	}
 	old := t.st.MsgID
@@ -383,7 +409,7 @@ func parseCommand(text, botUsername string) (cmd, args string, ok bool) {
 	head, rest, _ := strings.Cut(text, " ")
 	head = strings.ToLower(strings.TrimPrefix(head, "/"))
 	if name, target, found := strings.Cut(head, "@"); found {
-		if botUsername != "" && !strings.EqualFold(target, botUsername) {
+		if !strings.EqualFold(target, botUsername) {
 			return "", "", false
 		}
 		head = name

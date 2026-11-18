@@ -55,9 +55,21 @@ type state struct {
 	// districts are the districts of the city picked last: id -> name.
 	districts map[int]string
 
-	// Import holds the filters of an uploaded file until it is confirmed.
+	// Import holds the filters of an uploaded file until it is confirmed, and
+	// ImportMsgID the message that asks for the confirmation: its buttons are
+	// the only ones that may answer for this file.
 	Import        []domain.Search
 	ImportSkipped int
+	ImportMsgID   int
+}
+
+// claims reports that the message belongs to this state: it is the screen of
+// an open draft or the confirmation of a pending import.
+func (st *state) claims(msgID int) bool {
+	if msgID == 0 {
+		return false
+	}
+	return (st.Active && st.MsgID == msgID) || (len(st.Import) > 0 && st.ImportMsgID == msgID)
 }
 
 type states struct {
@@ -88,6 +100,25 @@ func (s *states) reset(key string) *state {
 	st := &state{}
 	s.m[key] = st
 	return st
+}
+
+// claimedByOther reports that a message of a group is the draft or the import
+// confirmation of a user other than the one asking. In a group everybody sees
+// everybody's messages, but a draft belongs to the person building it.
+//
+// The fields of a state are only ever touched by the worker of its chat, and
+// all users of a group share that one worker, so reading them here is safe.
+func (s *states) claimedByOther(chatID, userID string, msgID int) bool {
+	own := stateKey(chatID, userID)
+	prefix := chatID + ":"
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, st := range s.m {
+		if key != own && strings.HasPrefix(key, prefix) && st.claims(msgID) {
+			return true
+		}
+	}
+	return false
 }
 
 // stateKey separates users inside a group: two people building filters in
@@ -468,7 +499,7 @@ func parsePriceRange(raw string) (minV, maxV float64, ok bool) {
 			return 0, false
 		}
 		v, err := strconv.ParseFloat(b.String(), 64)
-		if err != nil {
+		if err != nil || !domain.ValidNumber(v) {
 			return 0, false
 		}
 		return v, true
@@ -494,7 +525,7 @@ func parsePriceRange(raw string) (minV, maxV float64, ok bool) {
 		if cur.Len() == 0 {
 			return
 		}
-		if v, err := strconv.ParseFloat(cur.String(), 64); err == nil {
+		if v, err := strconv.ParseFloat(cur.String(), 64); err == nil && domain.ValidNumber(v) {
 			nums = append(nums, v)
 		}
 		cur.Reset()

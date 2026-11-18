@@ -48,10 +48,12 @@ func (b *Bot) onMessage(ctx context.Context, msg *telegram.TGMessage) {
 	case msg.Document != nil:
 		b.onDocument(t, msg.Document)
 	case text == "":
+	case olx.IsOLXURL(text):
+		// Before the typed-answer case: a search link pasted while the bot
+		// waits for a query is a link, not a query.
+		b.onURL(t, text)
 	case t.st.Step != stepNone:
 		b.onStepText(t, text)
-	case olx.IsOLXURL(text):
-		b.onURL(t, text)
 	case !group:
 		// Ordinary chatter in a group is nobody's business; in a private chat
 		// the menu is the most useful answer to anything else.
@@ -85,14 +87,26 @@ func (b *Bot) onStranger(ctx context.Context, chatID, cmd, args string, isCmd bo
 	lang, _ := i18n.Parse(langCode)
 
 	if args != "" && b.pairingOpen() {
+		// One guess a minute per chat is looked at. Without this a stranger
+		// could make the bot talk on demand and, since the code is replaced
+		// after a few wrong guesses, keep killing the code the owner was
+		// about to type.
+		if !b.guesses.allow(chatID, b.now(), pairingGuessEvery) {
+			return
+		}
 		if !b.tryPair(args) {
 			_, _ = b.tg.SendHTML(ctx, chatID, i18n.T(lang, "acc.pair_bad"), nil, false)
 			return
 		}
 		bound, err := b.cfg.BindFirstAdmin(chatID)
-		if err != nil || !bound {
-			logx.Errorf("pairing of %s failed: bound=%v err=%v", chatID, bound, err)
+		if !bound {
+			logx.Errorf("pairing of %s failed: %v", chatID, err)
 			return
+		}
+		if err != nil {
+			// Bound in memory, but the config could not be written: the
+			// admin is lost on restart, and the owner has to know.
+			logx.Errorf("chat %s is the admin until restart only: the config could not be saved (%v)", chatID, err)
 		}
 		logx.Infof("👤 chat %s is now the admin of this bot", chatID)
 		t := b.newTurn(ctx, chatID, chatID)
@@ -216,10 +230,6 @@ func (b *Bot) onChatCommand(t *turn, cmd, args string) {
 			t.say("cmd.group_only")
 			return
 		}
-		if !b.cfg.IsTrusted(t.chatID) {
-			t.say("cmd.not_bound")
-			return
-		}
 		paused, err := b.removeChat(t, t.chatID)
 		if err != nil {
 			t.saveFailed(err)
@@ -232,8 +242,9 @@ func (b *Bot) onChatCommand(t *turn, cmd, args string) {
 			t.say("cmd.use_bind")
 			return
 		}
-		id := strings.TrimSpace(args)
-		if !config.ValidChatID(id) {
+		// "+123" and "0123" are chat 123: the id is used the way Telegram sends it.
+		id, ok := config.CanonicalChatID(args)
+		if !ok {
 			t.say("cmd.addchat_usage")
 			return
 		}
@@ -260,8 +271,8 @@ func (b *Bot) onChatCommand(t *turn, cmd, args string) {
 			t.say("cmd.use_bind")
 			return
 		}
-		id := strings.TrimSpace(args)
-		if !config.ValidChatID(id) {
+		id, ok := config.CanonicalChatID(args)
+		if !ok {
 			t.say("cmd.delchat_usage")
 			return
 		}

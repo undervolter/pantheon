@@ -195,7 +195,6 @@ func (b *Bot) viewHelp(t *turn) (string, *markup) {
 	}
 	rows = append(rows,
 		[]string{"/cancel", t.tr("bc.cancel")},
-		[]string{"/check", t.tr("help.cmd_check")},
 		[]string{"/chatid", t.tr("help.cmd_chatid")},
 		[]string{"/version", t.tr("help.cmd_version")},
 	)
@@ -209,6 +208,7 @@ func (b *Bot) viewHelp(t *turn) (string, *markup) {
 			{"/unbind", t.tr("help.cmd_unbind")},
 			{"/addchat &lt;id&gt;", t.tr("help.cmd_addchat")},
 			{"/delchat &lt;id&gt;", t.tr("help.cmd_delchat")},
+			{"/check", t.tr("help.cmd_check")},
 		})
 	}
 	p.note(t.tr("help.note"))

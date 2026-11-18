@@ -78,3 +78,33 @@ var brandParams = sync.OnceValue(func() map[string]bool {
 func IsBrandParam(name string) bool {
 	return brandParams()[name]
 }
+
+// FindCategoryInPath resolves one segment of a category path such as
+// /moda-i-stil/muzhskaya-odezhda/shorty/. Slugs repeat all over the tree
+// ("shorty" names six categories, "drugoe" more than a hundred), so a segment
+// is looked up under the category the previous segment named. Only the first
+// segment is searched everywhere, top level first.
+func FindCategoryInPath(parent *CategoryItem, slug string) *CategoryItem {
+	if slug == "" {
+		return nil
+	}
+	if parent == nil {
+		for i := range TopCategories {
+			if TopCategories[i].Slug == slug {
+				return &TopCategories[i]
+			}
+		}
+		return FindCategoryBySlug(slug)
+	}
+	for i := range parent.Children {
+		if parent.Children[i].Slug == slug {
+			return &parent.Children[i]
+		}
+	}
+	for i := range parent.Children {
+		if found := findCategoryBySlugRec(&parent.Children[i], slug); found != nil {
+			return found
+		}
+	}
+	return nil
+}

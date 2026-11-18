@@ -32,6 +32,7 @@ type fakeFetcher struct {
 	errs  map[string][]error          // filter id -> errors for successive calls
 	calls []string                    // "id@offset"
 	seen  []domain.Search
+	hold  map[string]chan struct{} // filter id -> fetches wait until it closes
 }
 
 func newFetcher() *fakeFetcher {
@@ -50,11 +51,29 @@ func (f *fakeFetcher) fail(id string, errs ...error) {
 	f.errs[id] = append(f.errs[id], errs...)
 }
 
-func (f *fakeFetcher) FetchPage(_ context.Context, s domain.Search, limit, offset int) ([]domain.Offer, error) {
+// holdUntil makes the next fetches of a filter wait for the channel to close,
+// like a request OLX is slow to answer.
+func (f *fakeFetcher) holdUntil(id string, release chan struct{}) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.hold == nil {
+		f.hold = map[string]chan struct{}{}
+	}
+	f.hold[id] = release
+}
+
+func (f *fakeFetcher) FetchPage(_ context.Context, s domain.Search, limit, offset int) ([]domain.Offer, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, fmt.Sprintf("%s@%d", s.ID, offset))
 	f.seen = append(f.seen, s)
+	hold := f.hold[s.ID]
+	f.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if queue := f.errs[s.ID]; len(queue) > 0 {
 		err := queue[0]
 		f.errs[s.ID] = queue[1:]

@@ -166,8 +166,19 @@ func LoadConfig(filename string) (*Config, error) {
 
 // ValidChatID сообщает, что строка — настоящий chat_id Telegram: ненулевое целое.
 func ValidChatID(id string) bool {
+	_, ok := CanonicalChatID(id)
+	return ok
+}
+
+// CanonicalChatID приводит chat_id к тому виду, в котором его присылает
+// Telegram: «+123» и «0123» — это чат 123, и храниться он должен как «123»,
+// иначе запись в списке никогда не совпадёт с настоящим чатом.
+func CanonicalChatID(id string) (string, bool) {
 	n, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
-	return err == nil && n != 0
+	if err != nil || n == 0 {
+		return "", false
+	}
+	return strconv.FormatInt(n, 10), true
 }
 
 // IsGroupID сообщает, что chat_id принадлежит группе или каналу (они отрицательные).
@@ -179,8 +190,8 @@ func cleanIDs(ids []string) []string {
 	out := make([]string, 0, len(ids))
 	seen := map[string]bool{}
 	for _, id := range ids {
-		id = strings.TrimSpace(id)
-		if !ValidChatID(id) || seen[id] {
+		id, ok := CanonicalChatID(id)
+		if !ok || seen[id] {
 			continue
 		}
 		seen[id] = true
@@ -279,7 +290,8 @@ func (c *Config) saveLocked() error {
 		return err
 	}
 	tmp := c.filePath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := writeSynced(tmp, data); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, c.filePath); err != nil {
@@ -287,6 +299,24 @@ func (c *Config) saveLocked() error {
 		return err
 	}
 	return nil
+}
+
+// writeSynced пишет файл и дожидается, пока данные дойдут до диска. Без этого
+// после отключения питания rename мог бы оставить на месте конфига пустой файл.
+func writeSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // ---------- доверенные чаты и админы ----------
@@ -341,8 +371,8 @@ func (c *Config) EnsureAdmin() (bool, error) {
 // BindFirstAdmin привязывает первого админа (после проверки кода привязки).
 // Срабатывает только пока админов нет.
 func (c *Config) BindFirstAdmin(chatID string) (bool, error) {
-	chatID = strings.TrimSpace(chatID)
-	if !ValidChatID(chatID) || IsGroupID(chatID) {
+	chatID, ok := CanonicalChatID(chatID)
+	if !ok || IsGroupID(chatID) {
 		return false, fmt.Errorf("недопустимый chat_id: %q", chatID)
 	}
 	c.mu.Lock()
@@ -359,9 +389,10 @@ func (c *Config) BindFirstAdmin(chatID string) (bool, error) {
 
 // AddTrustedChatID добавляет chat_id в список доверенных, если он ещё не там.
 func (c *Config) AddTrustedChatID(chatID string) (bool, error) {
-	chatID = strings.TrimSpace(chatID)
-	if !ValidChatID(chatID) {
-		return false, fmt.Errorf("недопустимый chat_id: %q", chatID)
+	raw := chatID
+	chatID, ok := CanonicalChatID(chatID)
+	if !ok {
+		return false, fmt.Errorf("недопустимый chat_id: %q", raw)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -375,7 +406,11 @@ func (c *Config) AddTrustedChatID(chatID string) (bool, error) {
 // RemoveChatID убирает chat_id из доверенных вместе с его языком, паузой и
 // тихими часами. Последнего админа удалить нельзя.
 func (c *Config) RemoveChatID(chatID string) (bool, error) {
-	chatID = strings.TrimSpace(chatID)
+	if canonical, ok := CanonicalChatID(chatID); ok {
+		chatID = canonical
+	} else {
+		chatID = strings.TrimSpace(chatID)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !contains(c.TelegramChatIDs, chatID) {

@@ -86,7 +86,11 @@ type Checker struct {
 	workers  map[string]bool
 	workerWG sync.WaitGroup
 	dead     map[string]time.Time
-	noPhotos map[int64]bool
+	// noPhotos: alerts whose last attempt timed out; they are retried without
+	// photos. unrecorded: alerts that were delivered while the write recording
+	// it failed. Both map an alert id to when the note was made.
+	noPhotos   map[int64]time.Time
+	unrecorded map[int64]time.Time
 }
 
 func New(cfg *config.Config, db *store.Store, fetch Fetcher, tg Messenger) *Checker {
@@ -104,7 +108,8 @@ func New(cfg *config.Config, db *store.Store, fetch Fetcher, tg Messenger) *Chec
 		badRequests: make(map[string]int),
 		workers:     make(map[string]bool),
 		dead:        make(map[string]time.Time),
-		noPhotos:    make(map[int64]bool),
+		noPhotos:    make(map[int64]time.Time),
+		unrecorded:  make(map[int64]time.Time),
 	}
 }
 
@@ -303,6 +308,12 @@ func (c *Checker) cycle(ctx context.Context, silent bool) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
+			// While this fetch waited for its turn, OLX may have refused
+			// another one. Sending more requests would only prolong the ban.
+			if ctx.Err() != nil || c.now().Before(c.BlockedUntil()) {
+				results[i].err = context.Canceled
+				return
+			}
 			offers, err := c.fetchWithBackfill(ctx, s, limit, rules.Floor(s))
 			results[i] = fetchResult{offers: offers, err: err}
 			if olx.IsBlocked(err) {
@@ -376,7 +387,10 @@ func (c *Checker) process(ctx context.Context, s domain.Search, offers []domain.
 		return
 	}
 
-	commit := store.Commit{SearchID: s.ID, Now: rules.Now}
+	// Stamped now, not with the start of the cycle: an alert's time limit
+	// counts from when it was queued, and the fetches before this point may
+	// have taken a while.
+	commit := store.Commit{SearchID: s.ID, Now: c.now()}
 	recipients := c.recipients(s)
 	ansiLinks := c.cfg.GetANSIHyperlinks()
 	fresh, queryMisses := 0, 0

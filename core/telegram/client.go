@@ -132,7 +132,15 @@ func (c *Client) do(req *http.Request, method string, out any) error {
 		return apiErr
 	}
 	if out != nil && len(parsed.Result) > 0 {
-		return json.Unmarshal(parsed.Result, out)
+		if err := json.Unmarshal(parsed.Result, out); err != nil {
+			if method == "getUpdates" || method == "getMe" || method == "getFile" {
+				return fmt.Errorf("%s: unreadable result: %w", method, err)
+			}
+			// Telegram said ok: the message was sent, the edit was made. A
+			// result that cannot be read must not turn that into a failure,
+			// or the caller would send the same thing again.
+			logx.Warnf("[TG] %s succeeded, but its result could not be read: %v", method, err)
+		}
 	}
 	return nil
 }

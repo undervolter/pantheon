@@ -98,14 +98,17 @@ func ParseSearchURL(rawURL string) (*Parsed, error) {
 		sc.OwnerType = "business"
 	}
 
+	// The category is a path: each segment is a child of the one before it.
+	var category *catalog.CategoryItem
 	for _, part := range strings.Split(strings.Trim(u.Path, "/"), "/") {
 		switch {
 		case pathNoise[part]:
 		case strings.HasPrefix(part, "q-"):
 			sc.Query = strings.ReplaceAll(strings.TrimPrefix(part, "q-"), "-", " ")
 		default:
-			if cat := catalog.FindCategoryBySlug(part); cat != nil {
-				sc.Category = cat.ID
+			if next := catalog.FindCategoryInPath(category, part); next != nil {
+				category = next
+				sc.Category = next.ID
 			} else {
 				out.Slugs = append(out.Slugs, part)
 			}
@@ -308,9 +311,15 @@ func atoi(s string) int {
 	return n
 }
 
+// parseNumber reads a price or a range bound from a link. ParseFloat also
+// accepts "inf", "nan" and hex floats; none of them is a number a filter can
+// hold, and an infinite price cannot even be stored or exported.
 func parseNumber(s string) (float64, bool) {
 	f, err := strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(s), ",", "."), 64)
-	return f, err == nil
+	if err != nil || !domain.ValidNumber(f) {
+		return 0, false
+	}
+	return f, true
 }
 
 // parseFilterParam splits a query key into the filter name and its

@@ -133,7 +133,7 @@ If the config lists no chat id, the bot prints a one-time code to the console on
 
 Send that command to the bot in a private chat — you become the admin and the control panel opens. Merely writing to the bot or pressing one of its buttons is not enough: access is never granted that way.
 
-If `telegram_chat_ids` is filled in beforehand, the first user on the list becomes the admin.
+If `telegram_chat_ids` is filled in beforehand, the first user on the list becomes the admin (the bot prints who that is). Use the `admin_chat_ids` key to name someone else.
 
 Everyone else is added by the admin: `/addchat <id>` for a user or a channel, `/bind` inside a group. Anyone can learn their `chat_id` by sending `/start` to the bot.
 
@@ -208,7 +208,7 @@ Nothing to do: on the first start of 0.2.0
 1. the filters from `config.json` move to `pantheon.db`, and the original file is kept as `config.json.bak`;
 2. `seen_ids.txt` is imported into the database (the file itself is left in place);
 3. real-estate filters are carried over switched off;
-4. if no admin is set, the first user in `telegram_chat_ids` becomes one.
+4. if no admin is set, the first user in `telegram_chat_ids` becomes one — the bot prints this to the console on start. In 0.1.x that list was filled by whoever wrote to the bot first, so check that it is you; if not, stop the bot and put your own id into `admin_chat_ids`.
 
 Rolling back to 0.1.x: put `config.json.bak` back in place of `config.json`.
 

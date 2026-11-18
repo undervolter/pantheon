@@ -219,7 +219,11 @@ func (s *Store) DeleteSearch(ctx context.Context, id string) (bool, error) {
 		if _, err := tx.Exec("DELETE FROM seen WHERE scope = ?", id); err != nil {
 			return err
 		}
-		// Whatever was queued for a deleted filter is no longer wanted.
+		// Whatever was queued for a deleted filter is no longer wanted: someone
+		// who deletes a noisy filter expects it to go quiet at once. An alert
+		// row names only the first filter that matched its listing, so in the
+		// rare case that another filter of the same chat matched it too and
+		// the alert was still waiting, that alert is dropped with this one.
 		_, err = tx.Exec("UPDATE alerts SET status = 'failed', last_error = 'filter deleted', payload = NULL WHERE status = 'pending' AND search_id = ?", id)
 		return err
 	})

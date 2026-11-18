@@ -6,6 +6,7 @@ import (
 
 	"pantheon/core/domain"
 	"pantheon/core/logx"
+	"pantheon/core/olx"
 )
 
 // The frontier of a filter is the last_refresh_time up to which its results
@@ -100,8 +101,19 @@ func (c *Checker) fetchWithBackfill(ctx context.Context, s domain.Search, limit 
 
 	all, extra, reached := first, 0, false
 	for page := 1; page <= maxBackfillPages; page++ {
+		// Another filter may have been refused by OLX meanwhile; the frontier
+		// stays where it was and the gap is closed after the pause.
+		if ctx.Err() != nil || c.now().Before(c.BlockedUntil()) {
+			return all, nil
+		}
 		next, err := c.fetch.FetchPage(ctx, s, limit, page*limit)
 		if err != nil {
+			if olx.IsBlocked(err) {
+				// A refusal by address must reach the caller, which pauses all
+				// polling. The first page is not processed either: nothing is
+				// marked seen, so nothing is lost by reading it again later.
+				return nil, err
+			}
 			// The frontier stays where it was: the next poll tries to close
 			// the same gap again instead of skipping it silently.
 			logx.Warnf("'%s': backfill page %d failed (%v), will retry from the same point", s.Name, page+1, err)

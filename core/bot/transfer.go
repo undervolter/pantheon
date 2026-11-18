@@ -172,12 +172,16 @@ func (b *Bot) onDocument(t *turn, doc *telegram.TGDocument) {
 	}
 	t.resetState()
 	t.st.Import, t.st.ImportSkipped = fresh, skipped
-	t.send(b.viewImportConfirm(t, fresh, dupes, skipped))
+	t.st.ImportMsgID = t.send(b.viewImportConfirm(t, fresh, dupes, skipped))
+	if t.st.ImportMsgID == 0 {
+		// The question never reached the chat, so nothing can answer it.
+		t.st.Import = nil
+	}
 }
 
 func (b *Bot) confirmImport(t *turn) {
 	pending := t.st.Import
-	t.st.Import = nil
+	t.st.Import, t.st.ImportMsgID = nil, 0
 	if len(pending) == 0 {
 		t.toast(t.tr("common.stale"))
 		t.show(b.viewMain(t))
