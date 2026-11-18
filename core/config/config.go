@@ -1,53 +1,47 @@
+// Package config holds what the operator sets up once (token, limits) and the
+// small per-chat state the bot changes from its menus (trusted chats, admins,
+// language, pause, quiet hours). Filters live in the database, not here.
 package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	_ "time/tzdata" // quiet hours need Europe/Kyiv on hosts without a zone database
+
+	"pantheon/core/domain"
 )
 
-// FilterRange — диапазон числового фильтра (например, год или пробег).
-type FilterRange struct {
-	From float64 `json:"from,omitempty"`
-	To   float64 `json:"to,omitempty"`
-}
+const (
+	// TokenEnv overrides telegram_bot_token and is never written back to disk.
+	TokenEnv = "PANTHEON_BOT_TOKEN"
 
-type SearchConfig struct {
-	ID            string                 `json:"id,omitempty"`
-	Name          string                 `json:"name"`                     // Название фильтра
-	Query         string                 `json:"query"`                    // Поисковая фраза
-	QueryVariants []string               `json:"query_variants,omitempty"` // Нормализованные варианты для пост-фильтра
-	MinPrice      float64                `json:"min_price,omitempty"`      // Мин цена (0 если без ограничений)
-	MaxPrice      float64                `json:"max_price,omitempty"`      // Макс цена (0 если без ограничений)
-	CityID        int                    `json:"city_id,omitempty"`        // ID города (0 для всей Украины)
-	CityName      string                 `json:"city_name,omitempty"`      // Название города
-	RegionID      int                    `json:"region_id,omitempty"`      // ID области
-	DistrictID    int                    `json:"district_id,omitempty"`    // ID района внутри города (0 — весь город)
-	DistrictName  string                 `json:"district_name,omitempty"`  // Название района
-	Category      int                    `json:"category_id,omitempty"`    // ID категории
-	CatName       string                 `json:"category_name,omitempty"`  // Название категории
-	BrandParam    string                 `json:"brand_param,omitempty"`    // Параметр бренда в API (например: filter_enum_mobile_phone_manufacturer)
-	BrandValue    string                 `json:"brand_value,omitempty"`    // Значение бренда в API (например: 2065)
-	BrandName     string                 `json:"brand_name,omitempty"`     // Отображаемое имя бренда (например: Apple)
-	BrandValues   []string               `json:"brand_values,omitempty"`   // Мультивыбор брендов
-	BrandNames    []string               `json:"brand_names,omitempty"`    // Имена выбранных брендов
-	OwnerType     string                 `json:"owner_type,omitempty"`     // private | business | "" (все)
-	Filters       map[string][]string    `json:"filters,omitempty"`        // enum/checkbox: ключ фильтра -> значения
-	Ranges        map[string]FilterRange `json:"ranges,omitempty"`         // float/input: ключ -> диапазон
-	Disabled      bool                   `json:"disabled,omitempty"`       // Поставлен на паузу
-	CreatedAt     int64                  `json:"created_at,omitempty"`     // Unix timestamp создания фильтра
-	OwnerChatID   string                 `json:"owner_chat_id,omitempty"`  // chat_id владельца: алерты только ему (пусто — общий фильтр)
-}
+	defaultTimezone       = "Europe/Kyiv"
+	defaultSeenRetention  = 7 * 24 * time.Hour
+	defaultMaxFilters     = 50
+	minIntervalSeconds    = 3
+	defaultMaxAlertAgeMin = 30
+)
+
+// ErrLastAdmin is returned when a change would leave the bot without an admin.
+var ErrLastAdmin = errors.New("the last admin cannot be removed")
 
 type Config struct {
-	TelegramBotToken string         `json:"telegram_bot_token"` // Токен бота от @BotFather
-	TelegramChatIDs  []string       `json:"telegram_chat_ids"`  // Список chat_id
-	IntervalSeconds  int            `json:"interval_seconds"`   // Интервал проверки в секундах
-	NotifyOnStartup  bool           `json:"notify_on_startup"`  // Слать ли уведомления о первых найденных
-	Searches         []SearchConfig `json:"searches"`           // Список поисковых задач
+	TelegramBotToken string   `json:"telegram_bot_token"` // Токен бота от @BotFather
+	TelegramChatIDs  []string `json:"telegram_chat_ids"`  // Доверенные чаты: получатели алертов и пользователи пульта
+	AdminChatIDs     []string `json:"admin_chat_ids,omitempty"`
+	IntervalSeconds  int      `json:"interval_seconds"`  // Интервал проверки в секундах
+	NotifyOnStartup  bool     `json:"notify_on_startup"` // Слать ли уведомления о первых найденных
+
+	// Searches — наследие 0.1.x: при первом запуске фильтры переезжают в базу
+	// и из файла убираются.
+	Searches []domain.Search `json:"searches,omitempty"`
 
 	// Производительность: сколько поисков тянуть параллельно.
 	Concurrency int `json:"concurrency,omitempty"`
@@ -60,9 +54,9 @@ type Config struct {
 	// Фильтрация «свежеподнятых» старых лотов: смотреть на created_time,
 	// а не на last_refresh_time. true (по умолчанию) — старые поднятые лоты не алертятся.
 	SkipBumpedOld bool `json:"skip_bumped_old"`
-	// Максимальный возраст лота в минутах на момент проверки.
-	// 0 — без ограничения.
-	MaxAlertAgeMin int `json:"max_alert_age_min,omitempty"`
+	// Максимальный возраст лота в минутах на момент проверки. 0 — без ограничения.
+	// Без omitempty: иначе «0» не переживал бы перезапуск и превращался в дефолт.
+	MaxAlertAgeMin int `json:"max_alert_age_min"`
 
 	// Характеристики лота в карточке (таблица в сворачиваемом блоке).
 	ShowParams bool `json:"show_params"`
@@ -70,15 +64,37 @@ type Config struct {
 	// Ограничение выдачи за один опрос (по умолчанию 20).
 	FetchLimit int `json:"fetch_limit,omitempty"`
 
-	// ANSIHyperlinks включает OSC 8-ссылки в консольном логе.
-	ANSIHyperlinks bool `json:"ansi_hyperlinks,omitempty"`
+	// ANSIHyperlinks включает OSC 8-ссылки в консольном логе. Без omitempty по
+	// той же причине, что и MaxAlertAgeMin: «false» должен сохраняться.
+	ANSIHyperlinks bool `json:"ansi_hyperlinks"`
 
-	// Отключение догрузки страниц при переполнении (backfill).
-	DisableBackfill bool  `json:"disable_backfill,omitempty"`
-	Backfill        *bool `json:"backfill,omitempty"`
+	// Догрузка страниц при переполнении (backfill). nil — включена.
+	Backfill *bool `json:"backfill,omitempty"`
+	// DisableBackfill — старое имя той же настройки; при загрузке сливается в Backfill.
+	DisableBackfill bool `json:"disable_backfill,omitempty"`
 
-	mu       sync.RWMutex `json:"-"`
-	filePath string       `json:"-"`
+	// DataDir — где лежит pantheon.db. Пусто — рядом с файлом конфига.
+	DataDir string `json:"data_dir,omitempty"`
+	// Timezone — пояс для тихих часов. Пусто — Europe/Kyiv.
+	Timezone string `json:"timezone,omitempty"`
+	// SeenRetentionDays — сколько дней помнить просмотренный лот. 0 — 7 дней, меньше нуля — бессрочно.
+	SeenRetentionDays int `json:"seen_retention_days,omitempty"`
+	// MaxFiltersPerChat — страховочный лимит фильтров на чат. nil — 50, 0 — без лимита.
+	MaxFiltersPerChat *int `json:"max_filters_per_chat,omitempty"`
+
+	// Language — язык по умолчанию; Languages — выбранный язык по чатам.
+	Language    string            `json:"language,omitempty"`
+	Languages   map[string]string `json:"languages,omitempty"`
+	PausedChats []string          `json:"paused_chats,omitempty"`
+	// QuietHours — тихие часы по чатам в виде "22-8".
+	QuietHours map[string]string `json:"quiet_hours,omitempty"`
+	// AnnouncedVersion — для какой версии уже показано главное меню при старте.
+	AnnouncedVersion string `json:"announced_version,omitempty"`
+
+	mu       sync.RWMutex
+	filePath string
+	envToken string
+	loc      *time.Location
 }
 
 func LoadConfig(filename string) (*Config, error) {
@@ -94,8 +110,9 @@ func LoadConfig(filename string) (*Config, error) {
 	cfg.RichAlerts = true
 	// По умолчанию не алертим старые лоты, которые просто подняли.
 	cfg.SkipBumpedOld = true
-	// И не алертим лоты старше 20 минут к моменту проверки.
-	cfg.MaxAlertAgeMin = 20
+	// И не алертим лоты старше 30 минут к моменту проверки. Меньше нельзя:
+	// OLX индексирует лот через 10–18 минут после публикации.
+	cfg.MaxAlertAgeMin = defaultMaxAlertAgeMin
 	// Характеристики в карточке.
 	cfg.ShowParams = true
 	// 0 = без ограничений (все характеристики)
@@ -108,6 +125,9 @@ func LoadConfig(filename string) (*Config, error) {
 
 	if cfg.IntervalSeconds <= 0 {
 		cfg.IntervalSeconds = 15
+	}
+	if cfg.IntervalSeconds < minIntervalSeconds {
+		cfg.IntervalSeconds = minIntervalSeconds
 	}
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 4
@@ -125,9 +145,100 @@ func LoadConfig(filename string) (*Config, error) {
 	if cfg.MaxPhotos > 10 {
 		cfg.MaxPhotos = 10
 	}
-	cfg.filePath = filename
+	if cfg.MaxAlertAgeMin < 0 {
+		cfg.MaxAlertAgeMin = 0
+	}
+	if cfg.DisableBackfill {
+		off := false
+		cfg.Backfill = &off
+		cfg.DisableBackfill = false
+	}
 
+	// Плейсхолдеры вроде "your_chat_id" и прочий нечисловой мусор — не чаты.
+	cfg.TelegramChatIDs = cleanIDs(cfg.TelegramChatIDs)
+	cfg.AdminChatIDs = cleanIDs(cfg.AdminChatIDs)
+	cfg.PausedChats = cleanIDs(cfg.PausedChats)
+
+	cfg.filePath = filename
+	cfg.envToken = strings.TrimSpace(os.Getenv(TokenEnv))
 	return &cfg, nil
+}
+
+// ValidChatID сообщает, что строка — настоящий chat_id Telegram: ненулевое целое.
+func ValidChatID(id string) bool {
+	_, ok := CanonicalChatID(id)
+	return ok
+}
+
+// CanonicalChatID приводит chat_id к тому виду, в котором его присылает
+// Telegram: «+123» и «0123» — это чат 123, и храниться он должен как «123»,
+// иначе запись в списке никогда не совпадёт с настоящим чатом.
+func CanonicalChatID(id string) (string, bool) {
+	n, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
+	if err != nil || n == 0 {
+		return "", false
+	}
+	return strconv.FormatInt(n, 10), true
+}
+
+// IsGroupID сообщает, что chat_id принадлежит группе или каналу (они отрицательные).
+func IsGroupID(id string) bool {
+	return strings.HasPrefix(strings.TrimSpace(id), "-")
+}
+
+func cleanIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id, ok := CanonicalChatID(id)
+		if !ok || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+func contains(list []string, id string) bool {
+	for _, v := range list {
+		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+func without(list []string, id string) []string {
+	out := list[:0:0]
+	for _, v := range list {
+		if v != id {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// Token возвращает токен бота: из окружения, если он там задан, иначе из файла.
+func (c *Config) Token() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.envToken != "" {
+		return c.envToken
+	}
+	return strings.TrimSpace(c.TelegramBotToken)
+}
+
+// Validate проверяет то, без чего запускаться бессмысленно.
+func (c *Config) Validate() error {
+	token := c.Token()
+	if token == "" {
+		return fmt.Errorf("не задан токен бота: впишите telegram_bot_token в конфиг или задайте %s", TokenEnv)
+	}
+	if !strings.Contains(token, ":") {
+		return errors.New("telegram_bot_token не похож на токен от @BotFather (ожидается вид 123456789:AA…)")
+	}
+	return nil
 }
 
 // PerfSettings возвращает настройки параллелизма одним снимком (без гонок).
@@ -144,167 +255,393 @@ func (c *Config) SetFilePath(p string) {
 	c.filePath = p
 }
 
-func (c *Config) Save() error {
+// FilePath возвращает путь, по которому конфиг читается и пишется.
+func (c *Config) FilePath() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.filePath
+}
+
+// DataPath возвращает путь к файлу состояния (база, lock) в каталоге данных.
+func (c *Config) DataPath(name string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	dir := strings.TrimSpace(c.DataDir)
+	if dir == "" {
+		dir = filepath.Dir(c.filePath)
+	}
+	return filepath.Join(dir, name)
+}
+
+func (c *Config) Save() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.saveLocked()
 }
 
-// saveLocked пишет конфиг на диск. Вызывать только под c.mu (Lock или RLock).
+// saveLocked пишет конфиг на диск атомарно: во временный файл и rename.
+// Вызывать только под c.mu.Lock — два писателя делили бы один tmp-файл.
 func (c *Config) saveLocked() error {
+	if c.filePath == "" {
+		return nil
+	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(c.filePath, data, 0644)
-}
-
-func (c *Config) GetSearches() []SearchConfig {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	res := make([]SearchConfig, len(c.Searches))
-	copy(res, c.Searches)
-	return res
-}
-
-func (c *Config) GetActiveSearches() []SearchConfig {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	res := make([]SearchConfig, 0, len(c.Searches))
-	for _, s := range c.Searches {
-		if !s.Disabled {
-			res = append(res, s)
-		}
+	tmp := c.filePath + ".tmp"
+	if err := writeSynced(tmp, data); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
-	return res
-}
-
-func (c *Config) AddSearch(s SearchConfig) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if s.CreatedAt == 0 {
-		s.CreatedAt = time.Now().Unix()
+	if err := os.Rename(tmp, c.filePath); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
-	c.Searches = append(c.Searches, s)
-	return c.saveLocked()
+	return nil
 }
 
-func (c *Config) RemoveSearch(index int) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if index < 0 || index >= len(c.Searches) {
-		return fmt.Errorf("неверный индекс фильтра: %d", index)
+// writeSynced пишет файл и дожидается, пока данные дойдут до диска. Без этого
+// после отключения питания rename мог бы оставить на месте конфига пустой файл.
+func writeSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
 	}
-	c.Searches = append(c.Searches[:index], c.Searches[index+1:]...)
-	return c.saveLocked()
-}
-
-func (c *Config) ToggleSearch(index int) (bool, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if index < 0 || index >= len(c.Searches) {
-		return false, fmt.Errorf("неверный индекс фильтра: %d", index)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
 	}
-	c.Searches[index].Disabled = !c.Searches[index].Disabled
-	state := !c.Searches[index].Disabled
-	return state, c.saveLocked()
-}
-
-// SetSearchOwner закрепляет фильтр за конкретным чатом (владельцем алертов).
-// Пустой chatID делает фильтр общим: алерты уходят всем получателям.
-func (c *Config) SetSearchOwner(index int, chatID string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if index < 0 || index >= len(c.Searches) {
-		return fmt.Errorf("неверный индекс фильтра: %d", index)
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
 	}
-	c.Searches[index].OwnerChatID = chatID
-	return c.saveLocked()
+	return f.Close()
 }
 
-func (c *Config) SetInterval(sec int) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if sec < 3 {
-		sec = 3
-	}
-	c.IntervalSeconds = sec
-	return c.saveLocked()
-}
+// ---------- доверенные чаты и админы ----------
 
+// GetTelegramChatIDs возвращает доверенные чаты: получателей общих алертов.
 func (c *Config) GetTelegramChatIDs() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	res := make([]string, len(c.TelegramChatIDs))
-	copy(res, c.TelegramChatIDs)
-	return res
+	return append([]string(nil), c.TelegramChatIDs...)
 }
 
-func (c *Config) IsAuthorized(chatID string) bool {
+// IsTrusted сообщает, что chat_id есть в списке доверенных.
+func (c *Config) IsTrusted(chatID string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	for _, id := range c.TelegramChatIDs {
-		if id == chatID {
-			return true
-		}
-	}
-	return false
+	return contains(c.TelegramChatIDs, strings.TrimSpace(chatID))
 }
 
-// AddTrustedChatID добавляет chat_id в белый список, если он ещё не там.
-func (c *Config) AddTrustedChatID(chatID string, maxIDs int) (bool, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for _, id := range c.TelegramChatIDs {
-		if id == chatID {
-			return false, nil
-		}
-	}
-	if maxIDs > 0 && len(c.TelegramChatIDs) >= maxIDs {
-		return false, fmt.Errorf("достигнут лимит доверенных chat_id (%d)", maxIDs)
-	}
-	c.TelegramChatIDs = append(c.TelegramChatIDs, chatID)
-	return true, c.saveLocked()
+// IsAdmin сообщает, что пользователь может менять общие настройки и состав чатов.
+func (c *Config) IsAdmin(chatID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return contains(c.AdminChatIDs, strings.TrimSpace(chatID))
 }
 
-// RemoveChatID убирает chat_id из списка получателей.
-func (c *Config) RemoveChatID(chatID string) (bool, error) {
+// Admins возвращает список админов.
+func (c *Config) Admins() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]string(nil), c.AdminChatIDs...)
+}
+
+// EnsureAdmin один раз назначает админом первого пользователя из списка
+// доверенных и записывает это в файл. Права не «переезжают» к другому
+// пользователю при удалении чатов, потому что больше не выводятся из порядка.
+// Возвращает false, если назначить некого — тогда нужна привязка по коду.
+func (c *Config) EnsureAdmin() (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for i, id := range c.TelegramChatIDs {
-		if id == chatID {
-			c.TelegramChatIDs = append(c.TelegramChatIDs[:i], c.TelegramChatIDs[i+1:]...)
+	if len(c.AdminChatIDs) > 0 {
+		return true, nil
+	}
+	for _, id := range c.TelegramChatIDs {
+		if !IsGroupID(id) {
+			c.AdminChatIDs = []string{id}
 			return true, c.saveLocked()
 		}
 	}
 	return false, nil
 }
 
-// AutoAuthorizeChatID — авто-привязка первых пользователей бота.
-func (c *Config) AutoAuthorizeChatID(chatID string, maxValid int) (bool, error) {
+// BindFirstAdmin привязывает первого админа (после проверки кода привязки).
+// Срабатывает только пока админов нет.
+func (c *Config) BindFirstAdmin(chatID string) (bool, error) {
+	chatID, ok := CanonicalChatID(chatID)
+	if !ok || IsGroupID(chatID) {
+		return false, fmt.Errorf("недопустимый chat_id: %q", chatID)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	valid := make([]string, 0, len(c.TelegramChatIDs))
-	for _, id := range c.TelegramChatIDs {
-		id = strings.TrimSpace(id)
-		if id == "" || id == "YOUR_CHAT_ID_HERE" || id == "HOMIE_CHAT_ID_HERE" {
-			continue
-		}
-		if id == chatID {
-			return false, nil
-		}
-		valid = append(valid, id)
+	if len(c.AdminChatIDs) > 0 {
+		return false, nil
 	}
-	if maxValid > 0 && len(valid) >= maxValid {
-		return false, fmt.Errorf("лимит доверенных пользователей (%d)", maxValid)
+	if !contains(c.TelegramChatIDs, chatID) {
+		c.TelegramChatIDs = append(c.TelegramChatIDs, chatID)
 	}
+	c.AdminChatIDs = []string{chatID}
+	return true, c.saveLocked()
+}
 
+// AddTrustedChatID добавляет chat_id в список доверенных, если он ещё не там.
+func (c *Config) AddTrustedChatID(chatID string) (bool, error) {
+	raw := chatID
+	chatID, ok := CanonicalChatID(chatID)
+	if !ok {
+		return false, fmt.Errorf("недопустимый chat_id: %q", raw)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if contains(c.TelegramChatIDs, chatID) {
+		return false, nil
+	}
 	c.TelegramChatIDs = append(c.TelegramChatIDs, chatID)
 	return true, c.saveLocked()
+}
+
+// RemoveChatID убирает chat_id из доверенных вместе с его языком, паузой и
+// тихими часами. Последнего админа удалить нельзя.
+func (c *Config) RemoveChatID(chatID string) (bool, error) {
+	if canonical, ok := CanonicalChatID(chatID); ok {
+		chatID = canonical
+	} else {
+		chatID = strings.TrimSpace(chatID)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !contains(c.TelegramChatIDs, chatID) {
+		return false, nil
+	}
+	if contains(c.AdminChatIDs, chatID) && len(c.AdminChatIDs) == 1 {
+		return false, ErrLastAdmin
+	}
+	c.TelegramChatIDs = without(c.TelegramChatIDs, chatID)
+	c.AdminChatIDs = without(c.AdminChatIDs, chatID)
+	c.PausedChats = without(c.PausedChats, chatID)
+	delete(c.Languages, chatID)
+	delete(c.QuietHours, chatID)
+	return true, c.saveLocked()
+}
+
+// ---------- язык, пауза, тихие часы ----------
+
+// LangFor возвращает язык чата: выбранный в меню, иначе язык по умолчанию из
+// конфига. Пустая строка — язык не задан.
+func (c *Config) LangFor(chatID string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if l := c.Languages[strings.TrimSpace(chatID)]; l != "" {
+		return l
+	}
+	return c.Language
+}
+
+// HasLang сообщает, выбирал ли чат язык явно.
+func (c *Config) HasLang(chatID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Languages[strings.TrimSpace(chatID)] != ""
+}
+
+func (c *Config) SetLang(chatID, lang string) error {
+	chatID = strings.TrimSpace(chatID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Languages == nil {
+		c.Languages = map[string]string{}
+	}
+	if c.Languages[chatID] == lang {
+		return nil
+	}
+	c.Languages[chatID] = lang
+	return c.saveLocked()
+}
+
+// IsPaused сообщает, что алерты в этот чат поставлены на паузу.
+func (c *Config) IsPaused(chatID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return contains(c.PausedChats, strings.TrimSpace(chatID))
+}
+
+func (c *Config) SetPaused(chatID string, paused bool) error {
+	chatID = strings.TrimSpace(chatID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if contains(c.PausedChats, chatID) == paused {
+		return nil
+	}
+	if paused {
+		c.PausedChats = append(c.PausedChats, chatID)
+	} else {
+		c.PausedChats = without(c.PausedChats, chatID)
+	}
+	return c.saveLocked()
+}
+
+// ParseQuietHours разбирает "22-8" в пару часов.
+func ParseQuietHours(v string) (from, to int, ok bool) {
+	a, b, found := strings.Cut(strings.TrimSpace(v), "-")
+	if !found {
+		return 0, 0, false
+	}
+	from, err1 := strconv.Atoi(strings.TrimSpace(a))
+	to, err2 := strconv.Atoi(strings.TrimSpace(b))
+	if err1 != nil || err2 != nil || from < 0 || from > 23 || to < 0 || to > 23 || from == to {
+		return 0, 0, false
+	}
+	return from, to, true
+}
+
+func (c *Config) GetQuietHours(chatID string) (from, to int, ok bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return ParseQuietHours(c.QuietHours[strings.TrimSpace(chatID)])
+}
+
+func (c *Config) SetQuietHours(chatID string, from, to int, on bool) error {
+	chatID = strings.TrimSpace(chatID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !on {
+		if _, had := c.QuietHours[chatID]; !had {
+			return nil
+		}
+		delete(c.QuietHours, chatID)
+		return c.saveLocked()
+	}
+	if c.QuietHours == nil {
+		c.QuietHours = map[string]string{}
+	}
+	c.QuietHours[chatID] = fmt.Sprintf("%d-%d", from, to)
+	return c.saveLocked()
+}
+
+// Location возвращает часовой пояс для тихих часов. Сервер бота часто живёт
+// в UTC, поэтому берём не локальное время хоста, а настроенный пояс.
+func (c *Config) Location() *time.Location {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.loc != nil {
+		return c.loc
+	}
+	name := strings.TrimSpace(c.Timezone)
+	if name == "" {
+		name = defaultTimezone
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		loc = time.Local
+	}
+	c.loc = loc
+	return loc
+}
+
+// InQuietHours сообщает, попадает ли момент в тихие часы чата. Интервал может
+// переходить через полночь ("22-8").
+func (c *Config) InQuietHours(chatID string, at time.Time) bool {
+	from, to, ok := c.GetQuietHours(chatID)
+	if !ok {
+		return false
+	}
+	h := at.In(c.Location()).Hour()
+	if from < to {
+		return h >= from && h < to
+	}
+	return h >= from || h < to
+}
+
+// MarkAnnounced запоминает, что для этой версии главное меню уже разослано.
+// Возвращает true только в первый раз.
+func (c *Config) MarkAnnounced(version string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.AnnouncedVersion == version {
+		return false, nil
+	}
+	c.AnnouncedVersion = version
+	return true, c.saveLocked()
+}
+
+// ---------- лимиты ----------
+
+// SeenRetention возвращает срок хранения просмотренных лотов; 0 — бессрочно.
+func (c *Config) SeenRetention() time.Duration {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	switch {
+	case c.SeenRetentionDays < 0:
+		return 0
+	case c.SeenRetentionDays == 0:
+		return defaultSeenRetention
+	}
+	return time.Duration(c.SeenRetentionDays) * 24 * time.Hour
+}
+
+// MaxFilters возвращает страховочный лимит фильтров на чат; 0 — без лимита.
+func (c *Config) MaxFilters() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.MaxFiltersPerChat == nil {
+		return defaultMaxFilters
+	}
+	if *c.MaxFiltersPerChat < 0 {
+		return 0
+	}
+	return *c.MaxFiltersPerChat
+}
+
+// ---------- наследие 0.1.x ----------
+
+// LegacySearches возвращает фильтры, оставшиеся в файле конфига от 0.1.x.
+func (c *Config) LegacySearches() []domain.Search {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]domain.Search, 0, len(c.Searches))
+	for _, s := range c.Searches {
+		out = append(out, s.Clone())
+	}
+	return out
+}
+
+// DropLegacySearches убирает фильтры из файла конфига после их переезда в базу.
+// Перед первой правкой исходный файл сохраняется как <config>.bak; уже
+// существующая копия не перезаписывается.
+func (c *Config) DropLegacySearches() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.Searches) == 0 || c.filePath == "" {
+		c.Searches = nil
+		return nil
+	}
+	bak := c.filePath + ".bak"
+	if _, err := os.Stat(bak); os.IsNotExist(err) {
+		original, err := os.ReadFile(c.filePath)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(bak, original, 0o600); err != nil {
+			return err
+		}
+	}
+	c.Searches = nil
+	return c.saveLocked()
+}
+
+// ---------- настройки из меню ----------
+
+func (c *Config) SetInterval(sec int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if sec < minIntervalSeconds {
+		sec = minIntervalSeconds
+	}
+	c.IntervalSeconds = sec
+	return c.saveLocked()
 }
 
 // GetInterval возвращает текущий интервал опроса.
@@ -312,6 +649,12 @@ func (c *Config) GetInterval() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.IntervalSeconds
+}
+
+func (c *Config) GetNotifyOnStartup() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.NotifyOnStartup
 }
 
 func (c *Config) GetSendPhotos() bool {
@@ -375,16 +718,6 @@ func (c *Config) SetFetchLimit(limit int) error {
 	return c.saveLocked()
 }
 
-func (c *Config) SetConcurrency(n int) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if n < 1 {
-		n = 1
-	}
-	c.Concurrency = n
-	return c.saveLocked()
-}
-
 func (c *Config) SetRichAlerts(enabled bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -413,23 +746,6 @@ func (c *Config) SetShowParams(enabled bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ShowParams = enabled
-	return c.saveLocked()
-}
-
-func (c *Config) SetMaxParams(n int) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if n < 1 {
-		n = 1
-	}
-	c.MaxParams = n
-	return c.saveLocked()
-}
-
-func (c *Config) SetANSIHyperlinks(enabled bool) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.ANSIHyperlinks = enabled
 	return c.saveLocked()
 }
 
@@ -473,14 +789,6 @@ func (c *Config) SetBackfillEnabled(enabled bool) error {
 	defer c.mu.Unlock()
 	b := enabled
 	c.Backfill = &b
-	c.DisableBackfill = !enabled
+	c.DisableBackfill = false
 	return c.saveLocked()
-}
-
-func (c *Config) GetDisableBackfill() bool {
-	return !c.GetBackfillEnabled()
-}
-
-func (c *Config) SetDisableBackfill(disabled bool) error {
-	return c.SetBackfillEnabled(!disabled)
 }

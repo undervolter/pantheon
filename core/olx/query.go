@@ -1,149 +1,116 @@
 package olx
 
 import (
-	"regexp"
+	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
+
+	"pantheon/core/catalog"
+	"pantheon/core/domain"
 )
 
-// StringInSlice сообщает, содержится ли строка v в срезе list.
-func StringInSlice(list []string, v string) bool {
-	for _, item := range list {
-		if item == v {
-			return true
+const (
+	defaultPageSize = 20
+	// OLX rejects limit > 50 with HTTP 400.
+	maxPageSize = 50
+)
+
+// BuildOffersQuery turns a filter into the query string of the offers API.
+//
+// Only ordinary OLX filter parameters reach the request: a key that is not
+// one (limit, sort_by, category_id smuggled in through an imported file or a
+// pasted link) is dropped here even if it got past validation.
+func BuildOffersQuery(search domain.Search, limit, offset int) url.Values {
+	q := url.Values{}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = defaultPageSize
+	}
+	if limit > maxPageSize {
+		limit = maxPageSize
+	}
+	q.Set("offset", strconv.Itoa(offset))
+	q.Set("limit", strconv.Itoa(limit))
+	// Despite the name this sorts by last_refresh_time, newest first.
+	q.Set("sort_by", "created_at:desc")
+
+	if query := strings.TrimSpace(search.Query); query != "" {
+		q.Set("query", query)
+	}
+	if search.Category > 0 {
+		q.Set("category_id", strconv.Itoa(search.Category))
+	}
+
+	if search.BrandParam != "" && catalog.IsBrandParam(search.BrandParam) {
+		values := search.BrandValues
+		if len(values) == 0 && search.BrandValue != "" {
+			values = []string{search.BrandValue}
+		}
+		setIndexed(q, search.BrandParam, values)
+	}
+
+	if search.FreeOnly() {
+		// The «Безкоштовно» checkbox of OLX. It works in every category and
+		// without one, also where the site itself does not show the checkbox.
+		q.Set("filter_enum_price[0]", "free")
+	} else {
+		if search.MinPrice > 0 {
+			q.Set("filter_float_price:from", fmt.Sprintf("%.0f", search.MinPrice))
+		}
+		if search.MaxPrice > 0 {
+			q.Set("filter_float_price:to", fmt.Sprintf("%.0f", search.MaxPrice))
 		}
 	}
-	return false
-}
 
-func stringInSlice(list []string, v string) bool {
-	return StringInSlice(list, v)
-}
-
-// Синонимы, которые встречаются в объявлениях и в том, как люди пишут запросы.
-var querySynonyms = strings.NewReplacer(
-	"айфон", "iphone",
-	"ифон", "iphone",
-	"афон", "iphone",
-	"эпл", "apple",
-	"еппл", "apple",
-	"самсунг", "samsung",
-	"сяоми", "xiaomi",
-	"ксиоми", "xiaomi",
-	"редми", "redmi",
-	"макбук", "macbook",
-	"плейстейшн", "playstation",
-	"плэйстейшн", "playstation",
-	"галакси", "galaxy",
-	"пиксель", "pixel",
-	"онеплюс", "oneplus",
-	"поко", "poco",
-	"нива", "niva",
-	"лада", "lada",
-	"тойота", "toyota",
-	"бмв", "bmw",
-	"мерседес", "mercedes",
-	"фольксваген", "volkswagen",
-	"шкода", "skoda",
-	"рено", "renault",
-	"пежо", "peugeot",
-	"ситроен", "citroen",
-	"хендай", "hyundai",
-	"киа", "kia",
-	"ниссан", "nissan",
-	"мазда", "mazda",
-	"мицубиси", "mitsubishi",
-	"субару", "subaru",
-	"хонда", "honda",
-	"ауди", "audi",
-	"опель", "opel",
-	"шевроле", "chevrolet",
-	"форд", "ford",
-	"фиат", "fiat",
-	"дачиа", "dacia",
-	"тесла", "tesla",
-)
-
-// Кириллические символы, которые визуально совпадают с латиницей.
-// Применяем к обеим сторонам (запрос и текст объявления), чтобы «4с» и «4s» совпали.
-var queryLookalikes = strings.NewReplacer(
-	"а", "a",
-	"е", "e",
-	"о", "o",
-	"р", "p",
-	"с", "s",
-	"х", "x",
-	"у", "y",
-	"і", "i",
-	"ї", "i",
-	"є", "e",
-	"ґ", "g",
-)
-
-var queryNonAlnum = regexp.MustCompile(`[^\p{L}\p{N}]+`)
-
-// NormalizeQuery приводит запрос к единому виду:
-// нижний регистр, синонимы, похожие кириллические буквы → латиница, только буквы/цифры.
-func NormalizeQuery(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	if s == "" {
-		return ""
+	if search.CityID > 0 {
+		q.Set("city_id", strconv.Itoa(search.CityID))
+	} else if search.RegionID > 0 {
+		q.Set("region_id", strconv.Itoa(search.RegionID))
 	}
-	s = querySynonyms.Replace(s)
-	s = queryLookalikes.Replace(s)
-	s = queryNonAlnum.ReplaceAllString(s, " ")
-	return strings.Join(strings.Fields(s), " ")
-}
+	if search.DistrictID > 0 {
+		q.Set("district_id", strconv.Itoa(search.DistrictID))
+	}
+	if search.OwnerType == "private" || search.OwnerType == "business" {
+		q.Set("owner_type", search.OwnerType)
+	}
 
-// QueryVariants возвращает варианты запроса для пост-фильтра.
-func QueryVariants(s string) []string {
-	canonical := NormalizeQuery(s)
-	if canonical == "" {
-		return nil
-	}
-	out := []string{canonical}
-	if compact := strings.ReplaceAll(canonical, " ", ""); compact != canonical {
-		out = append(out, compact)
-	}
-	return out
-}
-
-// OfferMatchesQuery проверяет, что в заголовке/описании есть все токены запроса.
-// Для одного токена — точное совпадение токена (чтобы «4s» не матчил «14s»).
-func OfferMatchesQuery(o *Offer, variants []string) bool {
-	if len(variants) == 0 {
-		return true
-	}
-	text := NormalizeQuery(o.Title + " " + StripHTMLTags(o.Description))
-	if text == "" {
-		return false
-	}
-	tokens := strings.Fields(text)
-	compact := strings.ReplaceAll(text, " ", "")
-
-	for _, v := range variants {
-		vt := strings.Fields(v)
-		if len(vt) == 0 {
+	for key, values := range search.Filters {
+		if !domain.ValidFilterKey(key) || key == search.BrandParam {
 			continue
 		}
-		if len(vt) == 1 {
-			if StringInSlice(tokens, vt[0]) {
-				return true
+		if strings.HasPrefix(key, "filter_bool_") {
+			if len(values) > 0 && (values[0] == "1" || strings.EqualFold(values[0], "true")) {
+				q.Set(key, "1")
 			}
 			continue
 		}
-		all := true
-		for _, tok := range vt {
-			if !StringInSlice(tokens, tok) {
-				all = false
-				break
-			}
+		setIndexed(q, key, values)
+	}
+	for key, r := range search.Ranges {
+		if !domain.ValidFilterKey(key) {
+			continue
 		}
-		if all {
-			return true
+		if r.From > 0 {
+			q.Set(key+":from", strconv.FormatFloat(r.From, 'f', -1, 64))
 		}
-		if compactV := strings.ReplaceAll(v, " ", ""); compactV != "" && strings.Contains(compact, compactV) {
-			return true
+		if r.To > 0 {
+			q.Set(key+":to", strconv.FormatFloat(r.To, 'f', -1, 64))
 		}
 	}
-	return false
+	return q
+}
+
+// setIndexed writes key[0], key[1]… without gaps for skipped empty values.
+func setIndexed(q url.Values, key string, values []string) {
+	i := 0
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v == "" {
+			continue
+		}
+		q.Set(fmt.Sprintf("%s[%d]", key, i), v)
+		i++
+	}
 }

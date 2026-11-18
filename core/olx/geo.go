@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	http "github.com/bogdanfinn/fhttp"
 )
@@ -49,18 +50,7 @@ func (c *OLXClient) getGeoJSON(path string, out interface{}) error {
 	if err != nil {
 		return err
 	}
-	req.Header = http.Header{
-		"accept":          {"application/json, text/plain, */*"},
-		"accept-language": {"uk-UA,uk;q=0.9,ru;q=0.8,en-US;q=0.7,en;q=0.6"},
-		"referer":         {"https://www.olx.ua/"},
-		"user-agent":      {c.userAgent},
-		http.HeaderOrderKey: {
-			"accept",
-			"accept-language",
-			"referer",
-			"user-agent",
-		},
-	}
+	req.Header = c.headers()
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -157,22 +147,40 @@ func (c *OLXClient) WarmGeoIndex() {
 	_, _ = c.geoIndex()
 }
 
+// geoIndex возвращает список всех городов по областям. Полный список живёт
+// в кэше сутки. Неполный (часть областей не ответила) — пару минут: им можно
+// пользоваться, но он должен скоро пересобраться, а не жить до перезапуска и
+// не строиться заново на каждый запрос (это ~26 обращений к OLX).
 func (c *OLXClient) geoIndex() ([]geoEntry, error) {
-	c.geoOnce.Do(func() {
-		c.geoEntries, c.geoErr = c.buildGeoIndex()
-	})
-	return c.geoEntries, c.geoErr
-}
-
-func (c *OLXClient) buildGeoIndex() ([]geoEntry, error) {
-	regions, err := c.FetchRegions()
+	c.geoMu.Lock()
+	defer c.geoMu.Unlock()
+	if len(c.geoEntries) > 0 && time.Since(c.geoBuiltAt) < geoIndexTTL {
+		return c.geoEntries, nil
+	}
+	entries, complete, err := c.buildGeoIndex()
 	if err != nil {
 		return nil, err
+	}
+	if len(entries) > 0 {
+		c.geoEntries, c.geoBuiltAt = entries, time.Now()
+		if !complete {
+			c.geoBuiltAt = c.geoBuiltAt.Add(geoPartialTTL - geoIndexTTL)
+		}
+	}
+	return entries, nil
+}
+
+// buildGeoIndex собирает список городов. complete=false означает, что часть
+// областей не ответила: результатом можно пользоваться, но кэшировать нельзя.
+func (c *OLXClient) buildGeoIndex() (entries []geoEntry, complete bool, err error) {
+	regions, err := c.FetchRegions()
+	if err != nil {
+		return nil, false, err
 	}
 
 	var mu sync.Mutex
 	var firstErr error
-	entries := make([]geoEntry, 0, 2048)
+	entries = make([]geoEntry, 0, 2048)
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 
@@ -203,11 +211,35 @@ func (c *OLXClient) buildGeoIndex() ([]geoEntry, error) {
 
 	if len(entries) == 0 {
 		if firstErr != nil {
-			return nil, firstErr
+			return nil, false, firstErr
 		}
-		return nil, fmt.Errorf("geo-индекс пуст")
+		return nil, false, fmt.Errorf("geo-индекс пуст")
 	}
-	return entries, nil
+	return entries, firstErr == nil, nil
+}
+
+// ResolveSlug ищет город или область по слагу из пути ссылки OLX
+// (".../telefony/kiev/"). Возвращает нулевые ID, если слаг не найден.
+func (c *OLXClient) ResolveSlug(slug string) (city GeoCity, region GeoRegion, ok bool) {
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if slug == "" {
+		return GeoCity{}, GeoRegion{}, false
+	}
+	entries, err := c.geoIndex()
+	if err != nil {
+		return GeoCity{}, GeoRegion{}, false
+	}
+	for _, e := range entries {
+		if strings.EqualFold(e.City.NormalizedName, slug) {
+			return e.City, e.Region, true
+		}
+	}
+	for _, e := range entries {
+		if strings.EqualFold(e.Region.NormalizedName, slug) {
+			return GeoCity{}, e.Region, true
+		}
+	}
+	return GeoCity{}, GeoRegion{}, false
 }
 
 var geoNameReplacer = strings.NewReplacer(
@@ -435,8 +467,3 @@ func (c *OLXClient) FuzzyLocations(query string) ([]GeoLocationSuggestion, error
 	}
 	return out, nil
 }
-
-
-func NormalizeGeoName(s string) string { return normalizeGeoName(s) }
-func Levenshtein(a, b string) int { return levenshtein(a, b) }
-func RankLocations(query string, results []GeoLocationSuggestion) []GeoLocationSuggestion { return rankLocations(query, results) }
