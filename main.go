@@ -44,9 +44,18 @@ func main() {
 	os.Exit(run(*configPath, *once, *tgUI, *testAlert, *testURL))
 }
 
+// Exit codes. exitSetup means "starting again will not help": the service
+// unit lists it in RestartPreventExitStatus so that a missing config or a
+// revoked token does not turn into a restart loop.
+const (
+	exitOK      = 0
+	exitRuntime = 1
+	exitSetup   = 2
+)
+
 func fail(format string, args ...any) int {
 	fmt.Fprintln(os.Stderr, logx.Redact(fmt.Sprintf(format, args...)))
-	return 1
+	return exitSetup
 }
 
 func run(configPath string, once, tgUI, testAlert bool, testURL string) int {
@@ -108,7 +117,7 @@ func run(configPath string, once, tgUI, testAlert bool, testURL string) int {
 		logx.Infof("⚡ single run")
 		chk.RunOnce(ctx)
 		logx.Infof("✅ done")
-		return 0
+		return exitOK
 	}
 
 	var exit atomic.Int32
@@ -116,8 +125,9 @@ func run(configPath string, once, tgUI, testAlert bool, testURL string) int {
 		panel := bot.New(tg, cfg, db, client, scanner{chk})
 		go func() {
 			if err := panel.Run(ctx); err != nil {
+				// Run returns only when Telegram rejects the bot token.
 				logx.Errorf("%v", err)
-				exit.Store(1)
+				exit.Store(exitSetup)
 				stop()
 			}
 		}()
@@ -213,9 +223,9 @@ func sendTestAlert(ctx context.Context, cfg *config.Config, tg *telegram.Client,
 		logx.Infof("✅ test alert sent to %s", chatID)
 	}
 	if failed > 0 {
-		return 1
+		return exitRuntime
 	}
-	return 0
+	return exitOK
 }
 
 func sampleOffer() domain.Offer {

@@ -8,11 +8,21 @@ Type=simple
 User=pantheon
 Group=pantheon
 WorkingDirectory=/opt/pantheon
-ExecStart=/opt/pantheon/pantheon
+ExecStart=/opt/pantheon/pantheon -config /opt/pantheon/config.json
 Restart=always
-RestartSec=3
+RestartSec=5
+# Код 2 — ошибка настройки (нет конфига, токен отклонён, уже запущен второй
+# экземпляр). Перезапуск её не исправит, поэтому systemd не зацикливается.
+RestartPreventExitStatus=2
+# По SIGTERM бот дожидается отправки уже найденных алертов.
+TimeoutStopSec=45
 
-# Бот сохраняет seen_ids.txt и читает config.json в рабочей директории.
+# Токен можно держать вне config.json:
+#   /opt/pantheon/pantheon.env  (0600)  →  PANTHEON_BOT_TOKEN=123456789:AA...
+EnvironmentFile=-/opt/pantheon/pantheon.env
+
+# Бот пишет в рабочую директорию: config.json, pantheon.db (+ -wal, -shm)
+# и pantheon.lock.
 ReadWritePaths=/opt/pantheon
 NoNewPrivileges=true
 PrivateTmp=true
