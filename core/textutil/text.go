@@ -1,4 +1,4 @@
-package olx
+package textutil
 
 import (
 	"fmt"
@@ -21,10 +21,6 @@ func StripHTMLTags(s string) string {
 	s = pTagRegex.ReplaceAllString(s, "\n")
 	s = allTagsRegex.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
-}
-
-func stripHTMLTags(s string) string {
-	return StripHTMLTags(s)
 }
 
 // Невидимые/нулевой ширины символы, которыми обходят фильтры.
@@ -52,10 +48,6 @@ func SanitizeListingText(s string) string {
 	s = prepareListingText(s)
 	s = strings.Join(strings.Fields(s), " ")
 	return glueSpacedLetters(s)
-}
-
-func sanitizeListingText(s string) string {
-	return SanitizeListingText(s)
 }
 
 // SanitizeListingDescription — для описания. Сохраняет абзацы, но:
@@ -102,10 +94,6 @@ func SanitizeListingDescription(s string) string {
 	}
 
 	return strings.Join(out, "\n")
-}
-
-func sanitizeListingDescription(s string) string {
-	return SanitizeListingDescription(s)
 }
 
 func prepareListingText(s string) string {
@@ -195,10 +183,6 @@ func IsLikelySpamTitle(title string) bool {
 		return true
 	}
 	return false
-}
-
-func isLikelySpamTitle(title string) bool {
-	return IsLikelySpamTitle(title)
 }
 
 // FormatModerationDelay форматирует задержку модерации/возраст лота.

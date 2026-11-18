@@ -3,14 +3,18 @@ package bot
 import (
 	"fmt"
 	"html"
-	"pantheon/core/checker"
-	"pantheon/core/config"
-	"pantheon/core/olx"
-	"pantheon/core/version"
 	"strconv"
 	"strings"
 	"sync"
 	"unicode"
+
+	"pantheon/core/catalog"
+	"pantheon/core/checker"
+	"pantheon/core/config"
+	"pantheon/core/domain"
+	"pantheon/core/olx"
+	"pantheon/core/textutil"
+	"pantheon/core/version"
 )
 
 type WizardStep int
@@ -27,10 +31,9 @@ const (
 
 type UserWizardState struct {
 	Step           WizardStep
-	Draft          config.SearchConfig
+	Draft          domain.Search
 	ParentCat      int
 	SelectedBrands map[string]string // brandID -> name
-	FilterCat      int
 	FilterIdx      int
 	FilterListPage int
 	FilterValPage  int
@@ -124,14 +127,14 @@ func (ui *BotUI) RenderMainMenu(chatID string) (string, *InlineKeyboardMarkup) {
 
 // searchForChat возвращает фильтр по индексу, если он доступен этому чату.
 // Свои фильтры видит только владелец, общие (без владельца) — все.
-func (ui *BotUI) searchForChat(chatID string, index int) (config.SearchConfig, bool) {
+func (ui *BotUI) searchForChat(chatID string, index int) (domain.Search, bool) {
 	searches := ui.cfg.GetSearches()
 	if index < 0 || index >= len(searches) {
-		return config.SearchConfig{}, false
+		return domain.Search{}, false
 	}
 	s := searches[index]
 	if s.OwnerChatID != "" && s.OwnerChatID != chatID {
-		return config.SearchConfig{}, false
+		return domain.Search{}, false
 	}
 	return s, true
 }
@@ -174,7 +177,7 @@ func (ui *BotUI) RenderFiltersList(chatID string) (string, *InlineKeyboardMarkup
 		}
 
 		label := fmt.Sprintf("%s %s (%s)", statusIcon, s.Name, priceInfo)
-		rows = append(rows, row(btn(olx.TruncateRunes(label, 60), fmt.Sprintf("f_view:%d", i))))
+		rows = append(rows, row(btn(textutil.TruncateRunes(label, 60), fmt.Sprintf("f_view:%d", i))))
 	}
 
 	if shown == 0 {
@@ -220,7 +223,7 @@ func (ui *BotUI) RenderFilterDetail(chatID string, index int) (string, *InlineKe
 	if s.CatName != "" {
 		catStr = html.EscapeString(s.CatName)
 	} else if s.Category > 0 {
-		if c := olx.FindCategory(s.Category); c != nil {
+		if c := catalog.FindCategory(s.Category); c != nil {
 			catStr = html.EscapeString(c.Name)
 		}
 	}
@@ -229,7 +232,7 @@ func (ui *BotUI) RenderFilterDetail(chatID string, index int) (string, *InlineKe
 	if s.CityName != "" {
 		cityStr = html.EscapeString(s.CityName)
 	} else if s.CityID > 0 {
-		if c := olx.FindCity(s.CityID); c != nil {
+		if c := catalog.FindCity(s.CityID); c != nil {
 			cityStr = html.EscapeString(c.Name)
 		}
 	}
@@ -259,7 +262,7 @@ func (ui *BotUI) RenderFilterDetail(chatID string, index int) (string, *InlineKe
 	filtersStr := filtersSummary(s)
 	variantsStr := ""
 	if len(s.QueryVariants) > 0 {
-		variantsStr = "🔤 <b>Варианты:</b> " + html.EscapeString(olx.TruncateRunes(strings.Join(s.QueryVariants, ", "), 180)) + "\n"
+		variantsStr = "🔤 <b>Варианты:</b> " + html.EscapeString(textutil.TruncateRunes(strings.Join(s.QueryVariants, ", "), 180)) + "\n"
 	}
 
 	recipientsStr := "🌐 <b>Получатели:</b> все (общий фильтр)\n"
@@ -307,7 +310,7 @@ func (ui *BotUI) RenderCategoryStep() (string, *InlineKeyboardMarkup) {
 	var rows [][]InlineKeyboardButton
 	var currentRow []InlineKeyboardButton
 
-	for _, c := range olx.TopCategories {
+	for _, c := range catalog.TopCategories {
 		currentRow = append(currentRow, btn(fmt.Sprintf("%s %s", c.Icon, c.Name), fmt.Sprintf("add_cat:%d", c.ID)))
 		if len(currentRow) == 2 {
 			rows = append(rows, currentRow)
@@ -326,9 +329,9 @@ func (ui *BotUI) RenderCategoryStep() (string, *InlineKeyboardMarkup) {
 
 // Шаг 1b: Подкатегории
 func (ui *BotUI) RenderSubcategoryStep(parentID int) (string, *InlineKeyboardMarkup) {
-	parent := olx.FindCategory(parentID)
+	parent := catalog.FindCategory(parentID)
 	if parent == nil || len(parent.Children) == 0 {
-		if info := olx.GetCategoryBrands(parentID); info != nil && len(info.Brands) > 0 {
+		if info := catalog.GetCategoryBrands(parentID); info != nil && len(info.Brands) > 0 {
 			return ui.RenderBrandStep(parentID, 0, nil)
 		}
 		return ui.RenderQueryStep(parentID, "", "")
@@ -336,14 +339,14 @@ func (ui *BotUI) RenderSubcategoryStep(parentID int) (string, *InlineKeyboardMar
 
 	text := fmt.Sprintf(
 		"📁 <b>%s</b>\n\nВыбери подкатегорию или выбери весь раздел целиком:",
-		html.EscapeString(olx.CategoryBreadcrumb(parentID)),
+		html.EscapeString(catalog.CategoryBreadcrumb(parentID)),
 	)
 
 	var rows [][]InlineKeyboardButton
 	var currentRow []InlineKeyboardButton
 
 	for _, sub := range parent.Children {
-		currentRow = append(currentRow, btn(olx.TruncateRunes(sub.Name, 40), fmt.Sprintf("add_subcat:%d", sub.ID)))
+		currentRow = append(currentRow, btn(textutil.TruncateRunes(sub.Name, 40), fmt.Sprintf("add_subcat:%d", sub.ID)))
 		if len(currentRow) == 2 {
 			rows = append(rows, currentRow)
 			currentRow = nil
@@ -353,7 +356,7 @@ func (ui *BotUI) RenderSubcategoryStep(parentID int) (string, *InlineKeyboardMar
 		rows = append(rows, currentRow)
 	}
 
-	rows = append(rows, row(btn(fmt.Sprintf("🎯 Выбрать всю '%s'", olx.TruncateRunes(parent.Name, 35)), fmt.Sprintf("add_cat_select:%d", parentID))))
+	rows = append(rows, row(btn(fmt.Sprintf("🎯 Выбрать всю '%s'", textutil.TruncateRunes(parent.Name, 35)), fmt.Sprintf("add_cat_select:%d", parentID))))
 
 	backData := "add_start"
 	backText := "⬅️ Назад к категориям"
@@ -368,17 +371,17 @@ func (ui *BotUI) RenderSubcategoryStep(parentID int) (string, *InlineKeyboardMar
 
 // 5. Шаг 2: Выбор бренда (мультивыбор)
 func (ui *BotUI) RenderBrandStep(catID int, page int, selected map[string]bool) (string, *InlineKeyboardMarkup) {
-	info := olx.GetCategoryBrands(catID)
+	info := catalog.GetCategoryBrands(catID)
 	if info == nil || len(info.Brands) == 0 {
 		catName := ""
-		if c := olx.FindCategory(catID); c != nil {
+		if c := catalog.FindCategory(catID); c != nil {
 			catName = c.Name
 		}
 		return ui.RenderQueryStep(catID, catName, "")
 	}
 
 	catName := ""
-	if c := olx.FindCategory(catID); c != nil {
+	if c := catalog.FindCategory(catID); c != nil {
 		catName = c.Name
 	}
 
@@ -427,7 +430,7 @@ func (ui *BotUI) RenderBrandStep(catID int, page int, selected map[string]bool) 
 			prefix = "✅ "
 		}
 		currentRow = append(currentRow, btn(
-			olx.TruncateRunes(prefix+b.Name, 55),
+			textutil.TruncateRunes(prefix+b.Name, 55),
 			fmt.Sprintf("add_brand_toggle:%d:%d:%s", catID, page, b.ID),
 		))
 		if len(currentRow) == 2 {
@@ -464,7 +467,7 @@ func (ui *BotUI) RenderBrandStep(catID int, page int, selected map[string]bool) 
 // 6. Шаг 3: Ввод текста поиска
 func (ui *BotUI) RenderQueryStep(catID int, catName string, brandName string) (string, *InlineKeyboardMarkup) {
 	if catName == "" && catID > 0 {
-		if c := olx.FindCategory(catID); c != nil {
+		if c := catalog.FindCategory(catID); c != nil {
 			catName = c.Name
 		}
 	}
@@ -490,7 +493,7 @@ func (ui *BotUI) RenderQueryStep(catID int, catName string, brandName string) (s
 		row(btn("❌ Отмена", "menu_main")),
 	)
 
-	if catID > 0 && olx.HasFilterCategory(catID) {
+	if catID > 0 && catalog.HasFilterCategory(catID) {
 		km = markup(
 			row(btn("⚙️ Доп. фильтры", fmt.Sprintf("filters_open:%d", catID))),
 			row(btn("⏩ Пропустить (ловить всё подряд)", "add_query_skip")),
@@ -502,7 +505,7 @@ func (ui *BotUI) RenderQueryStep(catID int, catName string, brandName string) (s
 }
 
 // RenderVariantsStep — управление вариантами запроса (пользователь добавляет сам).
-func (ui *BotUI) RenderVariantsStep(draft config.SearchConfig) (string, *InlineKeyboardMarkup) {
+func (ui *BotUI) RenderVariantsStep(draft domain.Search) (string, *InlineKeyboardMarkup) {
 	text := fmt.Sprintf(
 		"🔤 <b>Варианты запроса</b>\n\nЗапрос: <b>%s</b>\n\n"+
 			"Бот пришлёт лот, если в заголовке или описании есть все слова хотя бы одного варианта.\n"+
@@ -516,7 +519,7 @@ func (ui *BotUI) RenderVariantsStep(draft config.SearchConfig) (string, *InlineK
 
 	var rows [][]InlineKeyboardButton
 	for i, v := range draft.QueryVariants {
-		rows = append(rows, row(btn("🗑 "+olx.TruncateRunes(v, 45), fmt.Sprintf("variant_del:%d", i))))
+		rows = append(rows, row(btn("🗑 "+textutil.TruncateRunes(v, 45), fmt.Sprintf("variant_del:%d", i))))
 	}
 	rows = append(rows, row(btn("➕ Добавить вариант", "variant_add")))
 	rows = append(rows, row(btn("✅ Готово", "variants_done")))
@@ -526,11 +529,11 @@ func (ui *BotUI) RenderVariantsStep(draft config.SearchConfig) (string, *InlineK
 
 // categoryFilters — фильтры категории без служебных (цена, владелец, сортировка)
 // и без бренда, если он уже выбран отдельным шагом.
-func (ui *BotUI) categoryFilters(catID int, brandParam string) []olx.FilterDef {
-	all := olx.FiltersForCategory(catID)
-	out := make([]olx.FilterDef, 0, len(all))
+func (ui *BotUI) categoryFilters(catID int, brandParam string) []catalog.FilterDef {
+	all := catalog.FiltersForCategory(catID)
+	out := make([]catalog.FilterDef, 0, len(all))
 	for _, d := range all {
-		if olx.IsReservedFilterKey(d.Key) {
+		if catalog.IsReservedFilterKey(d.Key) {
 			continue
 		}
 		if brandParam != "" && d.Key == brandParam {
@@ -541,7 +544,7 @@ func (ui *BotUI) categoryFilters(catID int, brandParam string) []olx.FilterDef {
 	return out
 }
 
-func filterSelectedCount(d config.SearchConfig, def olx.FilterDef) int {
+func filterSelectedCount(d domain.Search, def catalog.FilterDef) int {
 	if len(d.Filters[def.Key]) > 0 {
 		return len(d.Filters[def.Key])
 	}
@@ -552,7 +555,7 @@ func filterSelectedCount(d config.SearchConfig, def olx.FilterDef) int {
 }
 
 // RenderFiltersStep — список дополнительных фильтров категории.
-func (ui *BotUI) RenderFiltersStep(draft config.SearchConfig, page int) (string, *InlineKeyboardMarkup) {
+func (ui *BotUI) RenderFiltersStep(draft domain.Search, page int) (string, *InlineKeyboardMarkup) {
 	defs := ui.categoryFilters(draft.Category, draft.BrandParam)
 	if len(defs) == 0 {
 		return "⚙️ Для этой категории нет дополнительных фильтров.",
@@ -582,7 +585,7 @@ func (ui *BotUI) RenderFiltersStep(draft config.SearchConfig, page int) (string,
 
 	catName := draft.CatName
 	if catName == "" && draft.Category > 0 {
-		if c := olx.FindCategory(draft.Category); c != nil {
+		if c := catalog.FindCategory(draft.Category); c != nil {
 			catName = c.Name
 		}
 	}
@@ -602,7 +605,7 @@ func (ui *BotUI) RenderFiltersStep(draft config.SearchConfig, page int) (string,
 				label += fmt.Sprintf("%d", n)
 			}
 		}
-		currentRow = append(currentRow, btn(olx.TruncateRunes(label, 30), fmt.Sprintf("filter_open:%d:%d:%d", draft.Category, i, page)))
+		currentRow = append(currentRow, btn(textutil.TruncateRunes(label, 30), fmt.Sprintf("filter_open:%d:%d:%d", draft.Category, i, page)))
 		if len(currentRow) == 2 {
 			rows = append(rows, currentRow)
 			currentRow = nil
@@ -629,7 +632,7 @@ func (ui *BotUI) RenderFiltersStep(draft config.SearchConfig, page int) (string,
 }
 
 // RenderFilterValues — значения выбранного фильтра.
-func (ui *BotUI) RenderFilterValues(draft config.SearchConfig, filterIdx, page int) (string, *InlineKeyboardMarkup) {
+func (ui *BotUI) RenderFilterValues(draft domain.Search, filterIdx, page int) (string, *InlineKeyboardMarkup) {
 	defs := ui.categoryFilters(draft.Category, draft.BrandParam)
 	if filterIdx < 0 || filterIdx >= len(defs) {
 		return ui.RenderFiltersStep(draft, 0)
@@ -694,7 +697,7 @@ func (ui *BotUI) RenderFilterValues(draft config.SearchConfig, filterIdx, page i
 	selected := draft.Filters[def.Key]
 	var selLabels []string
 	for _, v := range values {
-		if olx.StringInSlice(selected, v.Value) {
+		if textutil.StringInSlice(selected, v.Value) {
 			selLabels = append(selLabels, v.Label)
 		}
 	}
@@ -710,7 +713,7 @@ func (ui *BotUI) RenderFilterValues(draft config.SearchConfig, filterIdx, page i
 	}
 	text := fmt.Sprintf(
 		"⚙️ <b>%s</b>\nТип: %s\nСейчас: <b>%s</b>",
-		html.EscapeString(def.Label), typeStr, html.EscapeString(olx.TruncateRunes(cur, 120)),
+		html.EscapeString(def.Label), typeStr, html.EscapeString(textutil.TruncateRunes(cur, 120)),
 	)
 
 	var rows [][]InlineKeyboardButton
@@ -718,10 +721,10 @@ func (ui *BotUI) RenderFilterValues(draft config.SearchConfig, filterIdx, page i
 	for i := start; i < end; i++ {
 		v := values[i]
 		label := v.Label
-		if olx.StringInSlice(selected, v.Value) {
+		if textutil.StringInSlice(selected, v.Value) {
 			label = "✅ " + label
 		}
-		currentRow = append(currentRow, btn(olx.TruncateRunes(label, 32), fmt.Sprintf("filter_toggle:%d:%d:%d:%d", draft.Category, filterIdx, i, page)))
+		currentRow = append(currentRow, btn(textutil.TruncateRunes(label, 32), fmt.Sprintf("filter_toggle:%d:%d:%d:%d", draft.Category, filterIdx, i, page)))
 		if len(currentRow) == 2 {
 			rows = append(rows, currentRow)
 			currentRow = nil
@@ -755,7 +758,7 @@ func unitSuffix(unit string) string {
 	return " (" + unit + ")"
 }
 
-func rangeLabel(r config.FilterRange, unit string) string {
+func rangeLabel(r domain.FilterRange, unit string) string {
 	suffix := ""
 	if unit != "" {
 		suffix = " " + unit
@@ -776,8 +779,8 @@ func trimFloat(v float64) string {
 }
 
 // filtersSummary — строка выбранных фильтров для подтверждения.
-func filtersSummary(draft config.SearchConfig) string {
-	defs := olx.FiltersForCategory(draft.Category)
+func filtersSummary(draft domain.Search) string {
+	defs := catalog.FiltersForCategory(draft.Category)
 	var parts []string
 	for _, d := range defs {
 		if vals := draft.Filters[d.Key]; len(vals) > 0 {
@@ -809,7 +812,7 @@ func filtersSummary(draft config.SearchConfig) string {
 }
 
 // 7. Шаг 4: Выбор цены
-func (ui *BotUI) RenderPriceStep(draft config.SearchConfig) (string, *InlineKeyboardMarkup) {
+func (ui *BotUI) RenderPriceStep(draft domain.Search) (string, *InlineKeyboardMarkup) {
 	q := draft.Query
 	if q == "" {
 		q = "все лоты"
@@ -840,7 +843,7 @@ func (ui *BotUI) RenderPriceStep(draft config.SearchConfig) (string, *InlineKeyb
 }
 
 // RenderOwnerStep — выбор типа продавца (все / частные / бизнес).
-func (ui *BotUI) RenderOwnerStep(draft config.SearchConfig) (string, *InlineKeyboardMarkup) {
+func (ui *BotUI) RenderOwnerStep(draft domain.Search) (string, *InlineKeyboardMarkup) {
 	text := "👤 <b>Кто продаёт?</b>\n\n" +
 		"Можно отсечь магазины и бизнес-аккаунты, либо наоборот — смотреть только их."
 	km := markup(
@@ -852,15 +855,15 @@ func (ui *BotUI) RenderOwnerStep(draft config.SearchConfig) (string, *InlineKeyb
 }
 
 // 8. Шаг 5: Выбор города
-func (ui *BotUI) RenderCityStep(draft config.SearchConfig) (string, *InlineKeyboardMarkup) {
+func (ui *BotUI) RenderCityStep(draft domain.Search) (string, *InlineKeyboardMarkup) {
 	text := "📍 <b>Локация поиска</b>\n\nВ каком регионе искать объявления?"
 
 	var rows [][]InlineKeyboardButton
 	rows = append(rows, row(btn("🇺🇦 Вся Україна", "add_city:0:0")))
 
 	var currentRow []InlineKeyboardButton
-	for i := 1; i < len(olx.TopCities); i++ {
-		c := olx.TopCities[i]
+	for i := 1; i < len(catalog.TopCities); i++ {
+		c := catalog.TopCities[i]
 		currentRow = append(currentRow, btn(c.Name, fmt.Sprintf("add_city:%d:%d", c.CityID, c.RegionID)))
 		if len(currentRow) == 2 {
 			rows = append(rows, currentRow)
@@ -897,7 +900,7 @@ func (ui *BotUI) RenderCityResults(query string, results []olx.GeoLocationSugges
 			if r.Region.ID > 0 && !seenRegions[r.Region.ID] {
 				seenRegions[r.Region.ID] = true
 				rows = append(rows, row(btn(
-					"🌍 Вся "+olx.TruncateRunes(r.Region.Name, 45),
+					"🌍 Вся "+textutil.TruncateRunes(r.Region.Name, 45),
 					fmt.Sprintf("add_region_pick:%d", r.Region.ID),
 				)))
 			}
@@ -909,7 +912,7 @@ func (ui *BotUI) RenderCityResults(query string, results []olx.GeoLocationSugges
 			label = fmt.Sprintf("%s (%s)", r.City.Name, r.Region.Name)
 		}
 		rows = append(rows, row(btn(
-			olx.TruncateRunes(label, 60),
+			textutil.TruncateRunes(label, 60),
 			fmt.Sprintf("add_city_pick:%d:%d", r.City.ID, r.Region.ID),
 		)))
 
@@ -918,7 +921,7 @@ func (ui *BotUI) RenderCityResults(query string, results []olx.GeoLocationSugges
 		if r.Region.ID > 0 && !seenRegions[r.Region.ID] {
 			seenRegions[r.Region.ID] = true
 			rows = append(rows, row(btn(
-				"🌍 Вся "+olx.TruncateRunes(r.Region.Name, 45),
+				"🌍 Вся "+textutil.TruncateRunes(r.Region.Name, 45),
 				fmt.Sprintf("add_region_pick:%d", r.Region.ID),
 			)))
 		}
@@ -941,7 +944,7 @@ func (ui *BotUI) RenderDistrictStep(cityName string, districts []olx.GeoDistrict
 
 	for _, d := range districts {
 		currentRow = append(currentRow, btn(
-			olx.TruncateRunes(d.Name, 30),
+			textutil.TruncateRunes(d.Name, 30),
 			fmt.Sprintf("add_district_pick:%d:%d:%d", d.ID, cityID, regionID),
 		))
 		if len(currentRow) == 2 {
@@ -960,7 +963,7 @@ func (ui *BotUI) RenderDistrictStep(cityName string, districts []olx.GeoDistrict
 }
 
 // 9. Подтверждение и запуск
-func (ui *BotUI) RenderConfirmStep(draft config.SearchConfig) (string, *InlineKeyboardMarkup) {
+func (ui *BotUI) RenderConfirmStep(draft domain.Search) (string, *InlineKeyboardMarkup) {
 	priceStr := "Без ограничений"
 	switch {
 	case draft.MinPrice > 0 && draft.MaxPrice > 0:
@@ -1006,7 +1009,7 @@ func (ui *BotUI) RenderConfirmStep(draft config.SearchConfig) (string, *InlineKe
 	filtersStr := filtersSummary(draft)
 	variantsStr := ""
 	if len(draft.QueryVariants) > 0 {
-		variantsStr = "🔤 <b>Варианты:</b> " + html.EscapeString(olx.TruncateRunes(strings.Join(draft.QueryVariants, ", "), 180)) + "\n"
+		variantsStr = "🔤 <b>Варианты:</b> " + html.EscapeString(textutil.TruncateRunes(strings.Join(draft.QueryVariants, ", "), 180)) + "\n"
 	}
 
 	name := draft.Name
@@ -1233,24 +1236,7 @@ func onOff(v bool) string {
 	return "ВЫКЛ"
 }
 
-func (ui *BotUI) SearchForChat(chatID string, index int) (config.SearchConfig, bool) {
-	return ui.searchForChat(chatID, index)
-}
-
-func ParsePriceRange(text string) (minP, maxP float64, ok bool) {
-	return parsePriceRange(text)
-}
-func FiltersSummary(s config.SearchConfig) string {
-	return filtersSummary(s)
-}
-func RangeLabel(r config.FilterRange, unit string) string {
-	return rangeLabel(r, unit)
-}
-func (ui *BotUI) CategoryFilters(categoryID int, brandParam string) []olx.FilterDef {
-	return ui.categoryFilters(categoryID, brandParam)
-}
-
-func brandDisplay(draft config.SearchConfig) string {
+func brandDisplay(draft domain.Search) string {
 	if len(draft.BrandNames) > 0 {
 		return strings.Join(draft.BrandNames, ", ")
 	}

@@ -1,10 +1,8 @@
-package test
+package textutil
 
 import (
 	"strings"
 	"testing"
-
-	"pantheon/core/olx"
 )
 
 func TestSanitizeListingText(t *testing.T) {
@@ -25,7 +23,7 @@ func TestSanitizeListingText(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		if got := olx.SanitizeListingText(c.in); got != c.want {
+		if got := SanitizeListingText(c.in); got != c.want {
 			t.Errorf("sanitizeListingText(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
@@ -55,7 +53,7 @@ func TestSanitizeListingDescription(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		if got := olx.SanitizeListingDescription(c.in); got != c.want {
+		if got := SanitizeListingDescription(c.in); got != c.want {
 			t.Errorf("sanitizeListingDescription(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
@@ -72,13 +70,13 @@ func TestIsLikelySpamTitle(t *testing.T) {
 		"...",
 	}
 	for _, s := range spam {
-		normalized := olx.SanitizeListingText(s)
-		if !olx.IsLikelySpamTitle(normalized) {
+		normalized := SanitizeListingText(s)
+		if !IsLikelySpamTitle(normalized) {
 			t.Errorf("%q must be treated as spam (normalized %q)", s, normalized)
 		}
 	}
 
-	if olx.IsLikelySpamTitle("Объявление о продаже микрофона Shure") {
+	if IsLikelySpamTitle("Объявление о продаже микрофона Shure") {
 		t.Error("normal ad title must not be treated as spam")
 	}
 }

@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"pantheon/core/config"
+	"pantheon/core/domain"
 	"pantheon/core/olx"
+	"pantheon/core/textutil"
 	"pantheon/core/version"
 )
 
 type Notifier interface {
-	NotifyNewOffer(offer olx.Offer, filterName, ownerChatID string)
+	NotifyNewOffer(offer domain.Offer, filterName, ownerChatID string)
 	GetSentCount() int64
 }
 
@@ -135,7 +137,7 @@ const (
 	skipReasonQueryMismatch = "Query mismatch"
 )
 
-func (c *Checker) logAdSkipped(offer olx.Offer, reason, details string) {
+func (c *Checker) logAdSkipped(offer domain.Offer, reason, details string) {
 	line := fmt.Sprintf("[%s] skipped ad %d, reason: %s",
 		time.Now().Format("15:04:05"), offer.ID, reason)
 	if details != "" {
@@ -144,18 +146,18 @@ func (c *Checker) logAdSkipped(offer olx.Offer, reason, details string) {
 	fmt.Println(line)
 }
 
-func (c *Checker) logAdFound(offer olx.Offer, filterName string) {
+func (c *Checker) logAdFound(offer domain.Offer, filterName string) {
 	fmt.Println(c.FormatAdFound(time.Now(), offer, filterName))
 }
 
-func (c *Checker) FormatAdFound(now time.Time, offer olx.Offer, filterName string) string {
+func (c *Checker) FormatAdFound(now time.Time, offer domain.Offer, filterName string) string {
 	line := fmt.Sprintf("[%s] found new ad! id %d | created at: %s | updated at: %s | price: %s | [%s]",
 		now.Format("15:04:05"),
 		offer.ID,
 		offerCreatedAtLabel(offer, true),
 		offerUpdatedAtLabel(offer, true),
-		olx.SanitizeListingText(offer.GetPrice()),
-		olx.SanitizeListingText(filterName),
+		textutil.SanitizeListingText(offer.GetPrice()),
+		textutil.SanitizeListingText(filterName),
 	)
 	if offer.URL != "" {
 		line += " | " + c.hyperlinkLabel(offer.URL, "link")
@@ -198,7 +200,7 @@ func hyperlinksAllowed() bool {
 	return !strings.EqualFold(os.Getenv("TERM"), "dumb")
 }
 
-func offerCreatedAtLabel(o olx.Offer, withSeconds bool) string {
+func offerCreatedAtLabel(o domain.Offer, withSeconds bool) string {
 	t, err := o.ParsedCreatedTime()
 	if err != nil || t.IsZero() {
 		return "unknown"
@@ -209,7 +211,7 @@ func offerCreatedAtLabel(o olx.Offer, withSeconds bool) string {
 	return t.Format("02.01.2006 15:04")
 }
 
-func offerUpdatedAtLabel(o olx.Offer, withSeconds bool) string {
+func offerUpdatedAtLabel(o domain.Offer, withSeconds bool) string {
 	t, err := o.ParsedRefreshTime()
 	if err != nil || t.IsZero() {
 		return "unknown"
@@ -220,7 +222,7 @@ func offerUpdatedAtLabel(o olx.Offer, withSeconds bool) string {
 	return t.Format("02.01.2006 15:04")
 }
 
-func topAdDetail(o olx.Offer) string {
+func topAdDetail(o domain.Offer) string {
 	switch {
 	case o.Promotion.TopAd:
 		return "top_ad"
@@ -333,16 +335,16 @@ func (c *Checker) CheckNow() {
 }
 
 type searchFetchResult struct {
-	offers []olx.Offer
+	offers []domain.Offer
 	err    error
 }
 
 type pendingOffer struct {
-	offer      olx.Offer
+	offer      domain.Offer
 	searchName string
 }
 
-func searchKey(s config.SearchConfig) string {
+func searchKey(s domain.Search) string {
 	if s.ID != "" {
 		return s.ID
 	}
@@ -380,7 +382,7 @@ func alertStartupGrace(maxAlertAgeMin int) time.Duration {
 	return grace
 }
 
-func pageOldestRefresh(offers []olx.Offer) time.Time {
+func pageOldestRefresh(offers []domain.Offer) time.Time {
 	var oldest time.Time
 	for _, o := range offers {
 		if o.IsTopAd() {
@@ -397,7 +399,7 @@ func pageOldestRefresh(offers []olx.Offer) time.Time {
 	return oldest
 }
 
-func pageNewestRefresh(offers []olx.Offer) time.Time {
+func pageNewestRefresh(offers []domain.Offer) time.Time {
 	var newest time.Time
 	for _, o := range offers {
 		if o.IsTopAd() {
@@ -414,7 +416,7 @@ func pageNewestRefresh(offers []olx.Offer) time.Time {
 	return newest
 }
 
-func pageReached(offers []olx.Offer, prev time.Time) bool {
+func pageReached(offers []domain.Offer, prev time.Time) bool {
 	oldest := pageOldestRefresh(offers)
 	if oldest.IsZero() {
 		return true
@@ -424,7 +426,7 @@ func pageReached(offers []olx.Offer, prev time.Time) bool {
 
 const maxBackfillPages = 3
 
-func (c *Checker) fetchOffersWithBackfill(search config.SearchConfig, limit int) ([]olx.Offer, error) {
+func (c *Checker) fetchOffersWithBackfill(search domain.Search, limit int) ([]domain.Offer, error) {
 	key := searchKey(search)
 	prev := c.getFrontier(key)
 
@@ -511,7 +513,7 @@ func (c *Checker) checkAll(isInitial bool) {
 
 	for i, search := range activeSearches {
 		wg.Add(1)
-		go func(i int, search config.SearchConfig) {
+		go func(i int, search domain.Search) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -536,7 +538,7 @@ func (c *Checker) checkAll(isInitial bool) {
 
 		variants := search.QueryVariants
 		if len(variants) == 0 && strings.TrimSpace(search.Query) != "" {
-			if norm := olx.NormalizeQuery(search.Query); norm != "" {
+			if norm := textutil.NormalizeQuery(search.Query); norm != "" {
 				variants = []string{norm}
 			}
 		}
@@ -581,21 +583,21 @@ func (c *Checker) checkAll(isInitial bool) {
 					if age := time.Since(checkTime); age > time.Duration(maxAlertAgeMin)*time.Minute {
 						c.logAdSkipped(offer, skipReasonTooOld, fmt.Sprintf(
 							"age: %s | limit: %dm | created: %s",
-							olx.FormatModerationDelay(age), maxAlertAgeMin, offerCreatedAtLabel(offer, false)))
+							textutil.FormatModerationDelay(age), maxAlertAgeMin, offerCreatedAtLabel(offer, false)))
 						continue
 					}
 				}
 			}
 
 			// 3. Нормализуем заголовок и спам-токены.
-			offer.Title = olx.SanitizeListingText(offer.Title)
-			if olx.IsLikelySpamTitle(offer.Title) {
-				c.logAdSkipped(offer, skipReasonSpamTitle, "title: "+olx.TruncateRunes(offer.Title, 60))
+			offer.Title = textutil.SanitizeListingText(offer.Title)
+			if textutil.IsLikelySpamTitle(offer.Title) {
+				c.logAdSkipped(offer, skipReasonSpamTitle, "title: "+textutil.TruncateRunes(offer.Title, 60))
 				continue
 			}
 
 			// 4. Пост-фильтр по запросу.
-			if !olx.OfferMatchesQuery(&offer, variants) {
+			if !textutil.MatchesQuery(offer.SearchText(), variants) {
 				querySkipped++
 				details := "filter: " + search.Name
 				if q := strings.TrimSpace(search.Query); q != "" {
@@ -630,17 +632,7 @@ func (c *Checker) checkAll(isInitial bool) {
 	}
 }
 
-func (c *Checker) SaveSeenID(id int64, ownerChatID string)  { c.saveSeenID(id, ownerChatID) }
-func (c *Checker) IsSeen(id int64, ownerChatID string) bool { return c.isSeen(id, ownerChatID) }
-func SearchKey(s config.SearchConfig) string                { return searchKey(s) }
-func AlertStartupGrace(maxAlertAgeMin int) time.Duration    { return alertStartupGrace(maxAlertAgeMin) }
-func PageOldestRefresh(offers []olx.Offer) time.Time        { return pageOldestRefresh(offers) }
-func PageNewestRefresh(offers []olx.Offer) time.Time        { return pageNewestRefresh(offers) }
-func PageReached(offers []olx.Offer, prev time.Time) bool   { return pageReached(offers, prev) }
-
 func (c *Checker) Client() *olx.OLXClient { return c.client }
-
-func (c *Checker) IsBackfillDisabled() bool { return c.isBackfillDisabled() }
 
 func (c *Checker) isBackfillDisabled() bool {
 	if c.cfg == nil {

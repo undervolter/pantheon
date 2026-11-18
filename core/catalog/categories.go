@@ -1,4 +1,4 @@
-package olx
+package catalog
 
 import "strings"
 

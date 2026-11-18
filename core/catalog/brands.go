@@ -1,4 +1,4 @@
-package olx
+package catalog
 
 // Auto-generated from live OLX search-parameters-definitions.
 type BrandItem struct {

@@ -435,9 +435,3 @@ func (c *OLXClient) FuzzyLocations(query string) ([]GeoLocationSuggestion, error
 	}
 	return out, nil
 }
-
-func NormalizeGeoName(s string) string { return normalizeGeoName(s) }
-func Levenshtein(a, b string) int      { return levenshtein(a, b) }
-func RankLocations(query string, results []GeoLocationSuggestion) []GeoLocationSuggestion {
-	return rankLocations(query, results)
-}

@@ -1,4 +1,4 @@
-package olx
+package textutil
 
 import (
 	"regexp"
@@ -13,10 +13,6 @@ func StringInSlice(list []string, v string) bool {
 		}
 	}
 	return false
-}
-
-func stringInSlice(list []string, v string) bool {
-	return StringInSlice(list, v)
 }
 
 // Синонимы, которые встречаются в объявлениях и в том, как люди пишут запросы.
@@ -107,13 +103,14 @@ func QueryVariants(s string) []string {
 	return out
 }
 
-// OfferMatchesQuery проверяет, что в заголовке/описании есть все токены запроса.
-// Для одного токена — точное совпадение токена (чтобы «4s» не матчил «14s»).
-func OfferMatchesQuery(o *Offer, variants []string) bool {
+// MatchesQuery проверяет, что в тексте лота (заголовок + описание) есть все
+// токены хотя бы одного варианта запроса. Для одного токена — точное
+// совпадение токена (чтобы «4s» не матчил «14s»).
+func MatchesQuery(raw string, variants []string) bool {
 	if len(variants) == 0 {
 		return true
 	}
-	text := NormalizeQuery(o.Title + " " + StripHTMLTags(o.Description))
+	text := NormalizeQuery(raw)
 	if text == "" {
 		return false
 	}
