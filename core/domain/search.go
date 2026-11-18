@@ -151,6 +151,11 @@ func (s *Search) Normalize() {
 	s.OwnerType = strings.TrimSpace(s.OwnerType)
 	s.PriceMode = strings.TrimSpace(s.PriceMode)
 	s.OwnerChatID = strings.TrimSpace(s.OwnerChatID)
+	// 0.1.x хранил названия вместе со значком («📍 Київ», «🌍 Полтавська
+	// область»). Значок — оформление, его добавляет экран.
+	s.CityName = strings.TrimSpace(strings.TrimLeft(s.CityName, "📍🌍🇺🇦 "))
+	s.DistrictName = strings.TrimSpace(s.DistrictName)
+	s.CatName = strings.TrimSpace(s.CatName)
 
 	s.QueryVariants = uniqueNonEmpty(s.QueryVariants, MaxVariants, 0)
 	s.ExcludeWords = uniqueNonEmpty(s.ExcludeWords, MaxExcludeWords, MaxExcludeRunes)
