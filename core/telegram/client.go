@@ -56,6 +56,8 @@ type Client struct {
 
 	// plainPages is set once the server turned out to have no rich messages.
 	plainPages atomic.Bool
+	// Switch after Telegram's URL fetcher fails but a direct upload succeeds.
+	uploadPhotos atomic.Bool
 }
 
 // New returns a client for the given bot token. The token is registered as a

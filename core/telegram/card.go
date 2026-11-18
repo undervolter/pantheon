@@ -243,10 +243,23 @@ func buildTextOffer(o *domain.Offer, opt CardOptions, params []domain.ParamKV) s
 	return strings.TrimSpace(sb.String())
 }
 
-func (c *Client) sendRich(ctx context.Context, chatID string, o domain.Offer, opt CardOptions, photos []string, km *InlineKeyboardMarkup) (int, error) {
+func (c *Client) sendRich(ctx context.Context, chatID string, o domain.Offer, opt CardOptions, photos []string, km *InlineKeyboardMarkup, files []photoUpload) (int, error) {
+	// Register photos explicitly: an HTTP URL in <img src> alone can be
+	// rejected with RICH_MESSAGE_PHOTO_NO_MEDIA_FOUND.
+	refs := make([]string, 0, len(photos))
+	media := make([]inputRichMessageMedia, 0, len(photos))
+	for i, u := range photos {
+		id := "photo_" + strconv.Itoa(i)
+		refs = append(refs, "tg://photo?id="+id)
+		media = append(media, inputRichMessageMedia{ID: id, Media: inputMediaPhoto{Type: "photo", Media: u}})
+	}
+	rich := map[string]any{"html": BuildRichOffer(o, opt, refs)}
+	if len(media) > 0 {
+		rich["media"] = media
+	}
 	payload := map[string]any{
 		"chat_id":      chatID,
-		"rich_message": map[string]any{"html": BuildRichOffer(o, opt, photos)},
+		"rich_message": rich,
 	}
 	if opt.Silent {
 		payload["disable_notification"] = true
@@ -255,7 +268,13 @@ func (c *Client) sendRich(ctx context.Context, chatID string, o domain.Offer, op
 		payload["reply_markup"] = km
 	}
 	var msg TGMessage
-	if err := c.Call(ctx, "sendRichMessage", payload, &msg); err != nil {
+	var err error
+	if len(files) > 0 {
+		err = c.callPhotoUpload(ctx, payload, files, &msg)
+	} else {
+		err = c.Call(ctx, "sendRichMessage", payload, &msg)
+	}
+	if err != nil {
 		return 0, err
 	}
 	return msg.MessageID, nil
@@ -275,8 +294,8 @@ func richRejected(err error) bool {
 
 // SendOffer delivers one alert and returns the id of the card message.
 //
-// It makes at most one attempt per representation and never repeats a send
-// whose outcome is unknown; retrying is the sender's decision.
+// It retries rejected photos as uploaded files, then without photos. It never
+// repeats a send whose outcome is unknown; retrying is the sender's decision.
 func (c *Client) SendOffer(ctx context.Context, chatID string, o domain.Offer, opt CardOptions) (int, error) {
 	km := OfferMarkup(o, opt.Lang)
 	var photos []string
@@ -285,10 +304,27 @@ func (c *Client) SendOffer(ctx context.Context, chatID string, o domain.Offer, o
 	}
 
 	if opt.Rich && !c.plainPages.Load() {
-		id, err := c.sendRich(ctx, chatID, o, opt, photos, km)
-		if err != nil && len(photos) > 0 && isPhotoRelated(err) {
+		var id int
+		var err error
+		upload := len(photos) > 0 && c.uploadPhotos.Load()
+		if upload {
+			id, err = c.sendRichUploaded(ctx, chatID, o, opt, photos, km)
+		} else {
+			id, err = c.sendRich(ctx, chatID, o, opt, photos, km, nil)
+		}
+		if err != nil && len(photos) > 0 && isPhotoRelated(err) && !upload {
+			logx.Warnf("[TG] Telegram could not fetch photos of listing %d (%v), retrying as uploaded files", o.ID, err)
+			id, err = c.sendRichUploaded(ctx, chatID, o, opt, photos, km)
+			if err == nil {
+				c.uploadPhotos.Store(true)
+			}
+		}
+		if err != nil && len(photos) > 0 && (isPhotoRelated(err) || errors.Is(err, errNoDownloadedPhotos)) {
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
 			logx.Warnf("[TG] photos of listing %d were not accepted (%v), sending the card without them", o.ID, err)
-			id, err = c.sendRich(ctx, chatID, o, opt, nil, km)
+			id, err = c.sendRich(ctx, chatID, o, opt, nil, km, nil)
 		}
 		if err == nil {
 			return id, nil
@@ -322,6 +358,11 @@ func (c *Client) SendOffer(ctx context.Context, chatID string, o domain.Offer, o
 type inputMediaPhoto struct {
 	Type  string `json:"type"`
 	Media string `json:"media"`
+}
+
+type inputRichMessageMedia struct {
+	ID    string          `json:"id"`
+	Media inputMediaPhoto `json:"media"`
 }
 
 // sendPhotos sends a silent album that follows a plain card.

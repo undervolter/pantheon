@@ -213,9 +213,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
 		r.Body = io.NopCloser(strings.NewReader(string(raw)))
 		if err := r.ParseMultipartForm(8 << 20); err == nil {
+			defer r.MultipartForm.RemoveAll()
 			for k, v := range r.MultipartForm.Value {
 				if len(v) > 0 {
 					call.Payload[k] = v[0]
+					if k == "rich_message" || k == "reply_markup" || k == "media" {
+						var decoded any
+						if json.Unmarshal([]byte(v[0]), &decoded) == nil {
+							call.Payload[k] = decoded
+						}
+					}
 				}
 			}
 			for k, files := range r.MultipartForm.File {

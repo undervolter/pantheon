@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -442,7 +443,11 @@ func TestSendOfferRich(t *testing.T) {
 func TestSendOfferRetriesWithoutPhotosOnce(t *testing.T) {
 	c, srv := newClient(t)
 	srv.Queue("sendRichMessage", tgtest.Fail(400, "Bad Request: RICH_MESSAGE_PHOTO_NO_MEDIA_FOUND"))
-	if _, err := c.SendOffer(ctx, "1", sampleOffer(t), CardOptions{Lang: i18n.RU, Rich: true, MaxPhotos: 5}); err != nil {
+	cdn := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(cdn.Close)
+	o := sampleOffer(t)
+	o.Photos = []domain.Photo{{Link: cdn.URL + "/missing.jpg"}}
+	if _, err := c.SendOffer(ctx, "1", o, CardOptions{Lang: i18n.RU, Rich: true, MaxPhotos: 5}); err != nil {
 		t.Fatal(err)
 	}
 	calls := srv.Calls("sendRichMessage")
@@ -451,6 +456,53 @@ func TestSendOfferRetriesWithoutPhotosOnce(t *testing.T) {
 	}
 	if !strings.Contains(calls[0].Text(), "<img") || strings.Contains(calls[1].Text(), "<img") {
 		t.Error("the second attempt must be the same card without photos")
+	}
+	if rich := calls[1].Payload["rich_message"].(map[string]any); rich["media"] != nil {
+		t.Error("the retry must not retain rejected media")
+	}
+}
+
+func TestSendOfferRegistersRichPhotos(t *testing.T) {
+	for _, limit := range []int{0, 1, 2} {
+		t.Run(string(rune('0'+limit)), func(t *testing.T) {
+			c, srv := newClient(t)
+			o := sampleOffer(t)
+			if _, err := c.SendOffer(ctx, "1", o, CardOptions{Lang: i18n.EN, Rich: true, MaxPhotos: limit}); err != nil {
+				t.Fatal(err)
+			}
+			call, _ := srv.Last("sendRichMessage")
+			rich := call.Payload["rich_message"].(map[string]any)
+			media, _ := rich["media"].([]any)
+			if len(media) != limit || strings.Count(call.Text(), "<img ") != limit {
+				t.Fatalf("photos and HTML references must match the limit %d: %s", limit, call.Raw)
+			}
+			if limit == 0 {
+				if _, ok := rich["media"]; ok {
+					t.Error("a card without photos must omit media")
+				}
+				return
+			}
+			urls := o.PhotoURLs(limit)
+			seen := map[string]bool{}
+			for i, entry := range media {
+				item := entry.(map[string]any)
+				id, _ := item["id"].(string)
+				photo := item["media"].(map[string]any)
+				if id == "" || seen[id] || !strings.Contains(call.Text(), `<img src="tg://photo?id=`+id+`"/>`) {
+					t.Fatalf("missing or duplicate photo reference: %s", call.Raw)
+				}
+				seen[id] = true
+				if photo["type"] != "photo" || photo["media"] != urls[i] {
+					t.Errorf("photo %d must carry its resized source URL: %s", i, call.Raw)
+				}
+			}
+			if strings.Contains(call.Text(), "https://cdn.example/") {
+				t.Error("source URLs belong in media, HTML must use registered references")
+			}
+			if strings.Contains(call.Text(), "<tg-collage>") != (limit > 1) {
+				t.Error("only multiple photos should use a collage")
+			}
+		})
 	}
 }
 
