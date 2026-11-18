@@ -42,6 +42,10 @@ const (
 	// at the same instant.
 	maxFetchSpacing = 750 * time.Millisecond
 
+	// The shortest time between the starts of two cycles, however often a
+	// poll is asked for. It equals the smallest interval the config accepts.
+	minCycleGap = 3 * time.Second
+
 	pruneEvery     = time.Hour
 	alertRetention = 30 * 24 * time.Hour
 )
@@ -185,6 +189,15 @@ func (c *Checker) Run(ctx context.Context) {
 		case <-ctx.Done():
 		case <-time.After(wait):
 		case <-c.trigger:
+			// A nudge shortens the wait, but cycles never run back to back:
+			// each one is a burst of requests to OLX, and a nudge comes from
+			// a button anyone can keep pressing.
+			if rest := minCycleGap - c.now().Sub(began); rest > 0 {
+				select {
+				case <-ctx.Done():
+				case <-time.After(rest):
+				}
+			}
 		}
 	}
 

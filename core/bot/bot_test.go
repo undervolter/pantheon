@@ -366,10 +366,13 @@ func TestAdminOnlyButtonsAndCommands(t *testing.T) {
 		t.Fatal("the admin must be able to change it")
 	}
 
-	for _, cmd := range []string{"/delchat 111", "/addchat 555", "/chats"} {
+	for _, cmd := range []string{"/delchat 111", "/addchat 555", "/chats", "/check"} {
 		h.tg.Reset()
 		h.say(user, user, cmd)
 		mustContain(t, h.text(), "только администратору")
+	}
+	if h.scan.triggers != 0 {
+		t.Fatal("a non-admin nudged the scanner, which is shared by every chat")
 	}
 	if !h.cfg.IsTrusted("111") || h.cfg.IsTrusted("555") {
 		t.Fatal("a non-admin changed the chat list")

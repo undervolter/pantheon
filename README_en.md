@@ -152,10 +152,9 @@ Everyone else is added by the admin: `/addchat <id>` for a user or a channel, `/
 | `/lang` | Language |
 | `/export` | Filters as a file; send a file to the bot to import |
 | `/cancel` | Cancel the current action |
-| `/check` | Check the results now |
 | `/chatid`, `/version` | chat_id of this chat, bot version |
 
-Admin only: `/chats`, `/bind`, `/unbind`, `/addchat <id>`, `/delchat <id>`.
+Admin only: `/chats`, `/bind`, `/unbind`, `/addchat <id>`, `/delchat <id>`, `/check` (check the results now).
 
 A link to an OLX search page sent to the bot becomes a filter.
 

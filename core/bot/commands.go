@@ -167,6 +167,11 @@ func (b *Bot) onCommand(t *turn, cmd, args string, msg *telegram.TGMessage) {
 		t.say("cmd.version", version.AppVersion)
 
 	case "check":
+		// The scanner is shared by every chat, like the button in settings.
+		if !t.admin {
+			t.say("common.admin_only")
+			return
+		}
 		if b.scan != nil {
 			b.scan.TriggerCheck()
 		}
