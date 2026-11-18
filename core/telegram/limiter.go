@@ -16,20 +16,27 @@ const (
 // Limiter spaces out alerts per chat. It belongs to the alert sender only:
 // menu traffic never waits in this line.
 type Limiter struct {
-	mu   sync.Mutex
-	next map[string]time.Time
-	now  func() time.Time
+	mu       sync.Mutex
+	next     map[string]time.Time
+	now      func() time.Time
+	chatGap  time.Duration
+	groupGap time.Duration
 }
 
 func NewLimiter() *Limiter {
-	return &Limiter{next: make(map[string]time.Time), now: time.Now}
+	return NewLimiterWith(ChatGap, GroupGap)
 }
 
-func chatGap(chatID string) time.Duration {
+// NewLimiterWith builds a limiter with its own gaps.
+func NewLimiterWith(chatGap, groupGap time.Duration) *Limiter {
+	return &Limiter{next: make(map[string]time.Time), now: time.Now, chatGap: chatGap, groupGap: groupGap}
+}
+
+func (l *Limiter) gap(chatID string) time.Duration {
 	if strings.HasPrefix(chatID, "-") {
-		return GroupGap
+		return l.groupGap
 	}
-	return ChatGap
+	return l.chatGap
 }
 
 // Reserve books the next free send slot for the chat and returns how long the
@@ -42,7 +49,7 @@ func (l *Limiter) Reserve(chatID string) time.Duration {
 	if next, ok := l.next[chatID]; ok && next.After(at) {
 		at = next
 	}
-	l.next[chatID] = at.Add(chatGap(chatID))
+	l.next[chatID] = at.Add(l.gap(chatID))
 	return at.Sub(now)
 }
 

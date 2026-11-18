@@ -178,6 +178,13 @@ func (s *Server) Last(method string) (Call, bool) {
 	return calls[len(calls)-1], true
 }
 
+// LastMessageID returns the id the server gave to the newest message.
+func (s *Server) LastMessageID() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nextMsg
+}
+
 // Reset forgets the recorded calls.
 func (s *Server) Reset() {
 	s.mu.Lock()

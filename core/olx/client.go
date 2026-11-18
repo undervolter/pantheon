@@ -139,16 +139,6 @@ func (c *OLXClient) FetchPage(ctx context.Context, search domain.Search, limit, 
 	return offersResp.Data, nil
 }
 
-// FetchOffers возвращает первую страницу выдачи.
-func (c *OLXClient) FetchOffers(search domain.Search, limit int) ([]domain.Offer, error) {
-	return c.FetchPage(context.Background(), search, limit, 0)
-}
-
-// FetchOffersPage возвращает страницу выдачи с указанным offset.
-func (c *OLXClient) FetchOffersPage(search domain.Search, limit int, offset int) ([]domain.Offer, error) {
-	return c.FetchPage(context.Background(), search, limit, offset)
-}
-
 // FindOfferByURL находит объявление по публичной ссылке OLX через поисковый API.
 // В ссылке нет числового ID, поэтому ищем по хвосту -ID<hash>.html.
 func (c *OLXClient) FindOfferByURL(rawURL string) (domain.Offer, error) {
@@ -192,7 +182,7 @@ func (c *OLXClient) FindOfferByURL(rawURL string) (domain.Offer, error) {
 		}
 		query := strings.Join(words[:n], " ")
 
-		offers, err := c.FetchOffers(domain.Search{Query: query}, 50)
+		offers, err := c.FetchPage(context.Background(), domain.Search{Query: query}, 50, 0)
 		if err != nil {
 			lastErr = err
 			continue

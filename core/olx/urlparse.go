@@ -345,12 +345,3 @@ func parseFilterParam(raw string) (base, sub string) {
 	}
 	return s, ""
 }
-
-// ParseOLXURL is the 0.1.x entry point kept for the old control panel.
-func ParseOLXURL(rawURL string) (*domain.Search, error) {
-	p, err := ParseSearchURL(rawURL)
-	if err != nil {
-		return nil, err
-	}
-	return &p.Search, nil
-}

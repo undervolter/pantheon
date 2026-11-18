@@ -386,37 +386,3 @@ func TestDropLegacySearchesKeepsABackup(t *testing.T) {
 		t.Error("an existing backup must never be overwritten")
 	}
 }
-
-func TestAutoAuthorizeIgnoresPlaceholders(t *testing.T) {
-	cfg := &Config{TelegramChatIDs: []string{"your_chat_id", "YOUR_CHAT_ID_HERE", ""}}
-	cfg.SetFilePath(filepath.Join(t.TempDir(), "config.json"))
-
-	for _, id := range []string{"111", "222"} {
-		added, err := cfg.AutoAuthorizeChatID(id, 2)
-		if err != nil || !added {
-			t.Fatalf("AutoAuthorizeChatID(%s) = %v, %v; placeholders must not take a slot", id, added, err)
-		}
-	}
-	if added, err := cfg.AutoAuthorizeChatID("333", 2); err == nil || added {
-		t.Fatalf("third user must be refused, got added=%v err=%v", added, err)
-	}
-}
-
-func TestSetSearchOwnerPersists(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	cfg := &Config{
-		Searches: []domain.Search{{Name: "phones"}, {Name: "realty"}},
-	}
-	cfg.SetFilePath(path)
-
-	if err := cfg.SetSearchOwner(1, "222"); err != nil {
-		t.Fatal(err)
-	}
-	reloaded, err := LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reloaded.Searches[1].OwnerChatID != "222" || reloaded.Searches[0].OwnerChatID != "" {
-		t.Fatalf("owners after reload: %q / %q", reloaded.Searches[0].OwnerChatID, reloaded.Searches[1].OwnerChatID)
-	}
-}

@@ -1,642 +1,539 @@
+// Package checker polls OLX for every active filter, decides which listings
+// are news, and delivers the alerts.
+//
+// The two halves are decoupled by the database. A poll cycle evaluates a page
+// of results and, in one transaction, records which listings it has seen and
+// queues an alert for each match. A separate sender drains that queue. So a
+// listing is never marked as seen without its alert being durably queued, and
+// a Telegram outage delays alerts instead of losing them.
 package checker
 
 import (
-	"bufio"
-	"fmt"
-	"os"
-	"strconv"
-	"strings"
+	"context"
+	"encoding/json"
+	"errors"
+	"html"
+	"math/rand/v2"
 	"sync"
 	"time"
 
 	"pantheon/core/config"
 	"pantheon/core/domain"
+	"pantheon/core/i18n"
+	"pantheon/core/logx"
 	"pantheon/core/olx"
+	"pantheon/core/store"
+	"pantheon/core/telegram"
 	"pantheon/core/textutil"
-	"pantheon/core/version"
 )
 
-type Notifier interface {
-	NotifyNewOffer(offer domain.Offer, filterName, ownerChatID string)
-	GetSentCount() int64
+const (
+	// A filter OLX keeps rejecting with HTTP 400 is stopped after this many
+	// polls in a row: the request itself is wrong and will not get better.
+	maxBadRequests = 3
+
+	// Pause after OLX refuses requests by address (403 / 429). It doubles on
+	// every refusal in a row and is jittered so that several installations
+	// behind one address do not come back in step.
+	blockPauseMin = time.Minute
+	blockPauseMax = 15 * time.Minute
+
+	// Fetches of one cycle are started this far apart at most, instead of all
+	// at the same instant.
+	maxFetchSpacing = 750 * time.Millisecond
+
+	pruneEvery     = time.Hour
+	alertRetention = 30 * 24 * time.Hour
+)
+
+// Fetcher is the OLX search the checker needs.
+type Fetcher interface {
+	FetchPage(ctx context.Context, search domain.Search, limit, offset int) ([]domain.Offer, error)
 }
 
-type CheckerStats struct {
-	SeenCount      int
-	SentCount      int64
-	ActiveSearches int
-	TotalSearches  int
-	Interval       int
-	StartedAt      time.Time
+// Messenger is the part of the Telegram client the checker needs.
+type Messenger interface {
+	SendOffer(ctx context.Context, chatID string, o domain.Offer, opt telegram.CardOptions) (int, error)
+	SendHTML(ctx context.Context, chatID, text string, km *telegram.InlineKeyboardMarkup, silent bool) (int, error)
 }
 
 type Checker struct {
-	cfg       *config.Config
-	client    *olx.OLXClient
-	notifier  Notifier
+	cfg     *config.Config
+	db      *store.Store
+	fetch   Fetcher
+	tg      Messenger
+	limiter *telegram.Limiter
+
 	startedAt time.Time
-	seenMu    sync.RWMutex
-	SeenIDs   map[string]bool
-	seenFile  string
-	seenFh    *os.File
-	seenBuf   *bufio.Writer
-	runMu     sync.Mutex // не даём двум проверкам идти одновременно
+	now       func() time.Time
+	trigger   chan struct{}
+	wake      chan struct{}
 
-	// frontier — до какого last_refresh_time мы уже дочитали выдачу по каждому фильтру.
-	frontierMu sync.Mutex
-	frontiers  map[string]time.Time
+	mu           sync.Mutex
+	frontiers    map[string]time.Time
+	started      bool
+	blockedUntil time.Time
+	blockStreak  int
+	badRequests  map[string]int
+	lastPrune    time.Time
+
+	// Sender state.
+	sendMu   sync.Mutex
+	workers  map[string]bool
+	workerWG sync.WaitGroup
+	dead     map[string]time.Time
+	noPhotos map[int64]bool
 }
 
-func NewChecker(cfg *config.Config, client *olx.OLXClient, notifier Notifier) *Checker {
-	c := &Checker{
-		cfg:       cfg,
-		client:    client,
-		notifier:  notifier,
-		startedAt: time.Now(),
-		SeenIDs:   make(map[string]bool),
-		seenFile:  "seen_ids.txt",
-		frontiers: make(map[string]time.Time),
-	}
-	c.loadSeenIDs()
-	c.openSeenWriter()
-	return c
-}
-
-func (c *Checker) loadSeenIDs() {
-	c.seenMu.Lock()
-	defer c.seenMu.Unlock()
-
-	f, err := os.Open(c.seenFile)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		if strings.Contains(line, "|") {
-			c.SeenIDs[line] = true
-			continue
-		}
-		if _, err := strconv.ParseInt(line, 10, 64); err == nil {
-			c.SeenIDs[line] = true
-		}
+func New(cfg *config.Config, db *store.Store, fetch Fetcher, tg Messenger) *Checker {
+	return &Checker{
+		cfg:         cfg,
+		db:          db,
+		fetch:       fetch,
+		tg:          tg,
+		limiter:     telegram.NewLimiter(),
+		startedAt:   time.Now(),
+		now:         time.Now,
+		trigger:     make(chan struct{}, 1),
+		wake:        make(chan struct{}, 1),
+		frontiers:   make(map[string]time.Time),
+		badRequests: make(map[string]int),
+		workers:     make(map[string]bool),
+		dead:        make(map[string]time.Time),
+		noPhotos:    make(map[int64]bool),
 	}
 }
 
-func seenKey(id int64, ownerChatID string) string {
-	idStr := strconv.FormatInt(id, 10)
-	if ownerChatID == "" {
-		return "shared|" + idStr
-	}
-	return ownerChatID + "|" + idStr
+// SetLimiter replaces the per-chat alert limiter.
+func (c *Checker) SetLimiter(l *telegram.Limiter) { c.limiter = l }
+
+// StartedAt is when this process began polling.
+func (c *Checker) StartedAt() time.Time { return c.startedAt }
+
+// Started reports whether the first poll cycle has finished.
+func (c *Checker) Started() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.started
 }
 
-func (c *Checker) openSeenWriter() {
-	f, err := os.OpenFile(c.seenFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Printf("[Cache] ⚠️ Не удалось открыть %s на запись: %v\n", c.seenFile, err)
-		return
-	}
-	c.seenFh = f
-	c.seenBuf = bufio.NewWriterSize(f, 64*1024)
+// BlockedUntil is the end of the current pause after OLX refused requests;
+// zero when polling is not paused.
+func (c *Checker) BlockedUntil() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.blockedUntil
 }
 
-func (c *Checker) saveSeenID(id int64, ownerChatID string) {
-	key := seenKey(id, ownerChatID)
-	c.seenMu.Lock()
-	c.SeenIDs[key] = true
-	w := c.seenBuf
-	c.seenMu.Unlock()
-
-	if w != nil {
-		_, _ = fmt.Fprintf(w, "%s\n", key)
-	}
-}
-
-func (c *Checker) flushSeen() {
-	c.seenMu.Lock()
-	defer c.seenMu.Unlock()
-	if c.seenBuf != nil {
-		_ = c.seenBuf.Flush()
-	}
-	if c.seenFh != nil {
-		_ = c.seenFh.Sync()
-	}
-}
-
-const (
-	skipReasonTopAd         = "Top ad"
-	skipReasonOutdated      = "Outdated"
-	skipReasonTooOld        = "Too old"
-	skipReasonSpamTitle     = "Spam title"
-	skipReasonQueryMismatch = "Query mismatch"
-)
-
-func (c *Checker) logAdSkipped(offer domain.Offer, reason, details string) {
-	line := fmt.Sprintf("[%s] skipped ad %d, reason: %s",
-		time.Now().Format("15:04:05"), offer.ID, reason)
-	if details != "" {
-		line += " (" + details + ")"
-	}
-	fmt.Println(line)
-}
-
-func (c *Checker) logAdFound(offer domain.Offer, filterName string) {
-	fmt.Println(c.FormatAdFound(time.Now(), offer, filterName))
-}
-
-func (c *Checker) FormatAdFound(now time.Time, offer domain.Offer, filterName string) string {
-	line := fmt.Sprintf("[%s] found new ad! id %d | created at: %s | updated at: %s | price: %s | [%s]",
-		now.Format("15:04:05"),
-		offer.ID,
-		offerCreatedAtLabel(offer, true),
-		offerUpdatedAtLabel(offer, true),
-		textutil.SanitizeListingText(offer.GetPrice()),
-		textutil.SanitizeListingText(filterName),
-	)
-	if offer.URL != "" {
-		line += " | " + c.hyperlinkLabel(offer.URL, "link")
-	}
-	return line
-}
-
-func (c *Checker) hyperlinkLabel(url, label string) string {
-	if url == "" {
-		return ""
-	}
-	if (c.cfg != nil && !c.cfg.GetANSIHyperlinks()) || !hyperlinksAllowed() {
-		return url
-	}
-	return osc8Hyperlink(url, label)
-}
-
-func osc8Hyperlink(uri, label string) string {
-	return "\x1b]8;;" + sanitizeOSCField(uri) + "\x1b\\" +
-		sanitizeOSCField(label) + "\x1b]8;;\x1b\\"
-}
-
-func sanitizeOSCField(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case 0x1b, 0x07, '\n', '\r':
-			return -1
-		}
-		return r
-	}, s)
-}
-
-func hyperlinksAllowed() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("PANTHEON_ANSI_LINKS"))) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	}
-	return !strings.EqualFold(os.Getenv("TERM"), "dumb")
-}
-
-func offerCreatedAtLabel(o domain.Offer, withSeconds bool) string {
-	t, err := o.ParsedCreatedTime()
-	if err != nil || t.IsZero() {
-		return "unknown"
-	}
-	if withSeconds {
-		return t.Format("02.01.2006 15:04:05")
-	}
-	return t.Format("02.01.2006 15:04")
-}
-
-func offerUpdatedAtLabel(o domain.Offer, withSeconds bool) string {
-	t, err := o.ParsedRefreshTime()
-	if err != nil || t.IsZero() {
-		return "unknown"
-	}
-	if withSeconds {
-		return t.Format("02.01.2006 15:04:05")
-	}
-	return t.Format("02.01.2006 15:04")
-}
-
-func topAdDetail(o domain.Offer) string {
-	switch {
-	case o.Promotion.TopAd:
-		return "top_ad"
-	case o.Promotion.Highlighted:
-		return "highlighted"
-	case o.Promotion.PremiumAdPage:
-		return "premium_ad_page"
+// TriggerCheck asks for a poll cycle now instead of at the next tick.
+func (c *Checker) TriggerCheck() {
+	select {
+	case c.trigger <- struct{}{}:
 	default:
-		return "promoted"
 	}
 }
 
-func (c *Checker) Close() {
-	c.runMu.Lock()
-	c.runMu.Unlock()
-
-	c.flushSeen()
-	c.seenMu.Lock()
-	defer c.seenMu.Unlock()
-	if c.seenFh != nil {
-		_ = c.seenFh.Close()
-		c.seenFh = nil
-		c.seenBuf = nil
+// ActiveSearches returns the filters that are polled right now: enabled, not
+// snoozed, in a section the bot serves, and owned by a chat that still exists.
+func (c *Checker) ActiveSearches(ctx context.Context) ([]domain.Search, error) {
+	all, err := c.db.Searches(ctx)
+	if err != nil {
+		return nil, err
 	}
+	now := c.now()
+	out := all[:0:0]
+	for _, s := range all {
+		if !s.Active(now) {
+			continue
+		}
+		// A filter whose owner was removed would poll OLX for nobody.
+		if !s.IsShared() && !c.cfg.IsTrusted(s.OwnerChatID) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
-func (c *Checker) isSeen(id int64, ownerChatID string) bool {
-	idStr := strconv.FormatInt(id, 10)
-	c.seenMu.RLock()
-	defer c.seenMu.RUnlock()
+// Run polls until ctx is cancelled, then waits for the alert queue to drain.
+func (c *Checker) Run(ctx context.Context) {
+	sendCtx, stopSender := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopSender()
+	senderDone := make(chan struct{})
+	go func() {
+		defer close(senderDone)
+		c.senderLoop(sendCtx)
+	}()
 
-	if c.SeenIDs[idStr] {
-		return true
-	}
-	return c.SeenIDs[seenKey(id, ownerChatID)]
-}
+	// The first pass after a start is silent unless asked otherwise: it only
+	// learns what is already on the results pages.
+	silent := !c.cfg.GetNotifyOnStartup()
+	for ctx.Err() == nil {
+		began := c.now()
+		c.cycle(ctx, silent)
+		silent = false
+		c.mu.Lock()
+		c.started = true
+		c.mu.Unlock()
+		c.maybePrune(ctx)
 
-func (c *Checker) GetStats() CheckerStats {
-	c.seenMu.RLock()
-	seenCount := len(c.SeenIDs)
-	c.seenMu.RUnlock()
-
-	searches := c.cfg.GetSearches()
-	activeCount := 0
-	for _, s := range searches {
-		if !s.Disabled {
-			activeCount++
+		wait := time.Duration(c.cfg.GetInterval())*time.Second - c.now().Sub(began)
+		if wait < time.Second {
+			wait = time.Second
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(wait):
+		case <-c.trigger:
 		}
 	}
 
-	var sentCount int64
-	if c.notifier != nil {
-		sentCount = c.notifier.GetSentCount()
-	}
-
-	return CheckerStats{
-		SeenCount:      seenCount,
-		SentCount:      sentCount,
-		ActiveSearches: activeCount,
-		TotalSearches:  len(searches),
-		Interval:       c.cfg.GetInterval(),
-		StartedAt:      c.startedAt,
-	}
+	c.drain(shutdownDrain)
+	stopSender()
+	<-senderDone
 }
 
-func (c *Checker) GetSentCount() int64 {
-	if c.notifier == nil {
-		return 0
+// RunOnce does a single, non-silent poll cycle and delivers what it found.
+func (c *Checker) RunOnce(ctx context.Context) {
+	sendCtx, stopSender := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopSender()
+	senderDone := make(chan struct{})
+	go func() {
+		defer close(senderDone)
+		c.senderLoop(sendCtx)
+	}()
+
+	c.cycle(ctx, false)
+	c.drain(onceDrain)
+	stopSender()
+	<-senderDone
+}
+
+func (c *Checker) maybePrune(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
 	}
-	return c.notifier.GetSentCount()
-}
-
-func (c *Checker) FormatStartMessage() string {
-	active := c.cfg.GetActiveSearches()
-	return fmt.Sprintf("Started pantheon v%s at %s, active filters: %d, interval - %ds",
-		version.AppVersion, c.startedAt.Format("15:04:05 02.01.2006"), len(active), c.cfg.GetInterval())
-}
-
-const Banner = `                                __     __                            
-    ____     ____ _   ____     / /_   / /_     ___     ____     ____ 
-   / __ \   / __ ` + "`" + `/  / __ \   / __/  / __ \   / _ \   / __ \   / __ \
-  / /_/ /  / /_/ /  / / / /  / /_   / / / /  /  __/  / /_/ /  / / / /
- / .___/   \__,_/  /_/ /_/   \__/  /_/ /_/   \___/   \____/  /_/ /_/ 
-/_/                                                                  
-
-  made by undervolter | github.com/undervolter/pantheon
-      Want some updates? t.me/pantheonUpdates`
-
-func (c *Checker) Start() {
-	fmt.Println(Banner)
-	fmt.Println()
-	fmt.Println(c.FormatStartMessage())
-	fmt.Printf("[Cache] Загружено %d записей о просмотренных лотах из %s\n", len(c.SeenIDs), c.seenFile)
-
-	// Первый прогон (наполняем кэш и отсекаем старые)
-	c.checkAll(true)
-
-	for {
-		interval := c.cfg.GetInterval()
-		if interval < 3 {
-			interval = 3
+	now := c.now()
+	c.mu.Lock()
+	due := now.Sub(c.lastPrune) >= pruneEvery
+	if due {
+		c.lastPrune = now
+	}
+	c.mu.Unlock()
+	if !due {
+		return
+	}
+	var seenBefore time.Time
+	if keep := c.cfg.SeenRetention(); keep > 0 {
+		seenBefore = now.Add(-keep)
+	}
+	seen, alerts, err := c.db.Prune(ctx, seenBefore, now.Add(-alertRetention))
+	if err != nil {
+		if ctx.Err() == nil {
+			logx.Warnf("prune: %v", err)
 		}
-		time.Sleep(time.Duration(interval) * time.Second)
-		c.checkAll(false)
+		return
+	}
+	if seen+alerts > 0 {
+		logx.Infof("🧹 pruned %d seen marks and %d old alerts", seen, alerts)
 	}
 }
 
-func (c *Checker) CheckNow() {
-	c.checkAll(false)
-}
-
-type searchFetchResult struct {
+type fetchResult struct {
 	offers []domain.Offer
 	err    error
 }
 
-type pendingOffer struct {
-	offer      domain.Offer
-	searchName string
-}
-
-func searchKey(s domain.Search) string {
-	if s.ID != "" {
-		return s.ID
-	}
-	return fmt.Sprintf("%s|%s|%d|%s|%d|%d", s.OwnerChatID, s.Name, s.Category, s.Query, s.CityID, s.DistrictID)
-}
-
-func (c *Checker) getFrontier(key string) time.Time {
-	c.frontierMu.Lock()
-	defer c.frontierMu.Unlock()
-	return c.frontiers[key]
-}
-
-func (c *Checker) setFrontier(key string, t time.Time) {
-	if t.IsZero() {
+// cycle polls every active filter once.
+func (c *Checker) cycle(ctx context.Context, silent bool) {
+	if until := c.BlockedUntil(); c.now().Before(until) {
 		return
 	}
-	c.frontierMu.Lock()
-	defer c.frontierMu.Unlock()
-	if cur := c.frontiers[key]; t.After(cur) {
-		c.frontiers[key] = t
-	}
-}
-
-// Меньше 20 минут нельзя: OLX индексирует лот через 10–18 минут после
-// публикации, и свежий лот отсекался бы как «Outdated».
-const defaultStartupGrace = 20 * time.Minute
-
-func alertStartupGrace(maxAlertAgeMin int) time.Duration {
-	grace := defaultStartupGrace
-	if maxAlertAgeMin > 0 {
-		if d := time.Duration(maxAlertAgeMin) * time.Minute; d > grace {
-			grace = d
-		}
-	}
-	return grace
-}
-
-func pageOldestRefresh(offers []domain.Offer) time.Time {
-	var oldest time.Time
-	for _, o := range offers {
-		if o.IsTopAd() {
-			continue
-		}
-		t, err := o.ParsedRefreshTime()
-		if err != nil || t.IsZero() {
-			continue
-		}
-		if oldest.IsZero() || t.Before(oldest) {
-			oldest = t
-		}
-	}
-	return oldest
-}
-
-func pageNewestRefresh(offers []domain.Offer) time.Time {
-	var newest time.Time
-	for _, o := range offers {
-		if o.IsTopAd() {
-			continue
-		}
-		t, err := o.ParsedRefreshTime()
-		if err != nil || t.IsZero() {
-			continue
-		}
-		if newest.IsZero() || t.After(newest) {
-			newest = t
-		}
-	}
-	return newest
-}
-
-func pageReached(offers []domain.Offer, prev time.Time) bool {
-	oldest := pageOldestRefresh(offers)
-	if oldest.IsZero() {
-		return true
-	}
-	return !oldest.After(prev)
-}
-
-const maxBackfillPages = 3
-
-func (c *Checker) fetchOffersWithBackfill(search domain.Search, limit int) ([]domain.Offer, error) {
-	key := searchKey(search)
-	prev := c.getFrontier(key)
-
-	first, err := c.client.FetchOffersPage(search, limit, 0)
+	searches, err := c.ActiveSearches(ctx)
 	if err != nil {
-		return nil, err
-	}
-	if len(first) == 0 {
-		return first, nil
-	}
-
-	newest := pageNewestRefresh(first)
-	if c.isBackfillDisabled() || prev.IsZero() || pageReached(first, prev) {
-		if prev.IsZero() {
-			fmt.Printf("[%s] 📌 '%s': фронт выдачи %s\n",
-				time.Now().Format("15:04:05"), search.Name, newest.Format("15:04:05"))
-		}
-		c.setFrontier(key, newest)
-		return first, nil
-	}
-
-	all := first
-	extra := 0
-	reached := false
-	for page := 1; page <= maxBackfillPages; page++ {
-		next, err := c.client.FetchOffersPage(search, limit, page*limit)
-		if err != nil {
-			break
-		}
-		if len(next) == 0 {
-			reached = true
-			break
-		}
-		all = append(all, next...)
-		extra += len(next)
-		if t := pageNewestRefresh(next); t.After(newest) {
-			newest = t
-		}
-		if pageReached(next, prev) {
-			reached = true
-			break
-		}
-	}
-
-	c.setFrontier(key, newest)
-
-	if extra > 0 {
-		fmt.Printf("[%s] ↕️ '%s': догружено %d лотов (страница переполнена)\n",
-			time.Now().Format("15:04:05"), search.Name, extra)
-	}
-	if !reached {
-		fmt.Printf("[%s] ⚠️ '%s': не дошли до прошлого фронта за %d доп. страниц — возможна потеря\n",
-			time.Now().Format("15:04:05"), search.Name, maxBackfillPages)
-	}
-	return all, nil
-}
-
-func (c *Checker) checkAll(isInitial bool) {
-	if !c.runMu.TryLock() {
-		if !isInitial {
-			fmt.Printf("[%s] ⏭ Проверка уже выполняется, пропускаю внеочередной запуск\n", time.Now().Format("15:04:05"))
+		if ctx.Err() == nil {
+			logx.Errorf("read filters: %v", err)
 		}
 		return
 	}
-	defer c.runMu.Unlock()
-	defer c.flushSeen()
-
-	activeSearches := c.cfg.GetActiveSearches()
-	if len(activeSearches) == 0 {
+	if len(searches) == 0 {
 		return
 	}
 
-	concurrency, fetchLimit := c.cfg.PerfSettings()
+	concurrency, limit := c.cfg.PerfSettings()
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	skipBumpedOld := c.cfg.GetSkipBumpedOld()
-	maxAlertAgeMin := c.cfg.GetMaxAlertAgeMin()
+	rules := c.rules()
 
-	// 1. Параллельно тянем выдачу по всем фильтрам.
-	results := make([]searchFetchResult, len(activeSearches))
+	// Fetch in parallel, a little apart from each other; evaluate in order.
+	spacing := time.Duration(c.cfg.GetInterval()) * time.Second / time.Duration(len(searches)+1)
+	if spacing > maxFetchSpacing {
+		spacing = maxFetchSpacing
+	}
+	results := make([]fetchResult, len(searches))
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
-
-	for i, search := range activeSearches {
+	for i, s := range searches {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+			case <-time.After(spacing):
+			}
+		}
+		if ctx.Err() != nil || c.now().Before(c.BlockedUntil()) {
+			results[i].err = context.Canceled
+			continue
+		}
 		wg.Add(1)
-		go func(i int, search domain.Search) {
+		go func(i int, s domain.Search) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			offers, err := c.fetchOffersWithBackfill(search, fetchLimit)
-			results[i] = searchFetchResult{offers: offers, err: err}
-		}(i, search)
+			offers, err := c.fetchWithBackfill(ctx, s, limit, rules.Floor(s))
+			results[i] = fetchResult{offers: offers, err: err}
+			if olx.IsBlocked(err) {
+				c.block(ctx, err)
+			}
+		}(i, s)
 	}
 	wg.Wait()
 
-	// 2. Разбираем результаты в порядке фильтров.
-	for i, search := range activeSearches {
+	blocked := false
+	for i, s := range searches {
 		res := results[i]
-		if res.err != nil {
-			fmt.Printf("[%s] Ошибка проверки '%s': %v\n", time.Now().Format("15:04:05"), search.Name, res.err)
+		switch {
+		case res.err == nil:
+			c.noteRequestOK(s.ID)
+			c.process(ctx, s, res.offers, rules, silent)
+		case errors.Is(res.err, context.Canceled) || ctx.Err() != nil:
+		case olx.IsBlocked(res.err):
+			blocked = true
+		case olx.IsBadRequest(res.err):
+			c.noteBadRequest(ctx, s, res.err)
+		default:
+			logx.Warnf("'%s': %v", s.Name, res.err)
+		}
+	}
+	if !blocked {
+		c.mu.Lock()
+		c.blockStreak = 0
+		c.mu.Unlock()
+	}
+}
+
+func (c *Checker) rules() Rules {
+	return Rules{
+		Now:           c.now(),
+		StartedAt:     c.startedAt,
+		MaxAge:        time.Duration(c.cfg.GetMaxAlertAgeMin()) * time.Minute,
+		SkipBumpedOld: c.cfg.GetSkipBumpedOld(),
+	}
+}
+
+// process evaluates one page of results for one filter and records the
+// outcome: seen marks and queued alerts, in a single transaction.
+func (c *Checker) process(ctx context.Context, s domain.Search, offers []domain.Offer, rules Rules, silent bool) {
+	// Listings of a section the bot does not serve are dropped before anything
+	// else looks at them: not logged, not stored.
+	visible := offers[:0:0]
+	ids := make([]int64, 0, len(offers))
+	inPage := make(map[int64]bool, len(offers))
+	for i := range offers {
+		o := &offers[i]
+		if o.ID == 0 || inPage[o.ID] {
 			continue
 		}
-
-		newCount := 0
-		cachedCount := 0
-		querySkipped := 0
-		var pending []*pendingOffer
-
-		variants := search.QueryVariants
-		if len(variants) == 0 && strings.TrimSpace(search.Query) != "" {
-			if norm := textutil.NormalizeQuery(search.Query); norm != "" {
-				variants = []string{norm}
-			}
+		if v, _ := Evaluate(o, s, rules); v == SkipRealEstate {
+			continue
 		}
+		inPage[o.ID] = true
+		visible = append(visible, *o)
+		ids = append(ids, o.ID)
+	}
+	if len(visible) == 0 {
+		return
+	}
 
-		for _, offer := range res.offers {
-			if c.isSeen(offer.ID, search.OwnerChatID) {
-				continue
-			}
-			c.saveSeenID(offer.ID, search.OwnerChatID)
-			cachedCount++
-
-			// 1. Игнорируем ТОП / платное продвижение (мусор и накрутка)
-			if offer.IsTopAd() {
-				c.logAdSkipped(offer, skipReasonTopAd, topAdDetail(offer))
-				continue
-			}
-
-			// 2. Проверяем «возраст» лота.
-			checkTime := offer.FreshnessTime(skipBumpedOld)
-			if !checkTime.IsZero() {
-				minTime := c.startedAt.Add(-alertStartupGrace(maxAlertAgeMin))
-				if search.CreatedAt > 0 {
-					filterTime := time.Unix(search.CreatedAt, 0).Add(-defaultStartupGrace)
-					if filterTime.After(minTime) {
-						minTime = filterTime
-					}
-				}
-
-				if checkTime.Before(minTime) {
-					details := fmt.Sprintf("created: %s | updated: %s",
-						offerCreatedAtLabel(offer, false), offerUpdatedAtLabel(offer, false))
-					if skipBumpedOld {
-						if refreshed, err := offer.ParsedRefreshTime(); err == nil && refreshed.After(minTime) {
-							details = "bumped old | " + details
-						}
-					}
-					c.logAdSkipped(offer, skipReasonOutdated, details)
-					continue
-				}
-
-				if maxAlertAgeMin > 0 {
-					if age := time.Since(checkTime); age > time.Duration(maxAlertAgeMin)*time.Minute {
-						c.logAdSkipped(offer, skipReasonTooOld, fmt.Sprintf(
-							"age: %s | limit: %dm | created: %s",
-							textutil.FormatModerationDelay(age), maxAlertAgeMin, offerCreatedAtLabel(offer, false)))
-						continue
-					}
-				}
-			}
-
-			// 3. Нормализуем заголовок и спам-токены.
-			offer.Title = textutil.SanitizeListingText(offer.Title)
-			if textutil.IsLikelySpamTitle(offer.Title) {
-				c.logAdSkipped(offer, skipReasonSpamTitle, "title: "+textutil.TruncateRunes(offer.Title, 60))
-				continue
-			}
-
-			// 4. Пост-фильтр по запросу.
-			if !textutil.MatchesQuery(offer.SearchText(), variants) {
-				querySkipped++
-				details := "filter: " + search.Name
-				if q := strings.TrimSpace(search.Query); q != "" {
-					details = fmt.Sprintf("query: %s | filter: %s", q, search.Name)
-				}
-				c.logAdSkipped(offer, skipReasonQueryMismatch, details)
-				continue
-			}
-
-			if !isInitial || c.cfg.NotifyOnStartup {
-				pending = append(pending, &pendingOffer{offer: offer, searchName: search.Name})
-			}
+	seen, err := c.db.SeenSet(ctx, store.SeenScopes(s.ID, s.OwnerChatID), ids)
+	if err != nil {
+		if ctx.Err() == nil {
+			logx.Errorf("'%s': read seen marks: %v", s.Name, err)
 		}
+		return
+	}
 
-		// 5. Отправляем уведомления.
-		for _, it := range pending {
-			offer := it.offer
-			newCount++
+	commit := store.Commit{SearchID: s.ID, Now: rules.Now}
+	recipients := c.recipients(s)
+	ansiLinks := c.cfg.GetANSIHyperlinks()
+	fresh, queryMisses := 0, 0
 
-			c.logAdFound(offer, search.Name)
-			c.notifier.NotifyNewOffer(offer, search.Name, search.OwnerChatID)
+	for i := range visible {
+		o := &visible[i]
+		verdict, detail := Evaluate(o, s, rules)
+		if verdict == SkipPromoted {
+			// Not marked as seen: once the promotion ends the listing shows up
+			// in the ordinary results and is judged like any other. Not logged
+			// either — a third of every page is promoted, and without a seen
+			// mark the same lines would repeat on every poll.
+			continue
 		}
-
-		if isInitial {
-			fmt.Printf("[%s] Инициализация '%s': проверено %d лотов (новых в кэш: %d)\n",
-				time.Now().Format("15:04:05"), search.Name, len(res.offers), cachedCount)
+		commit.SeenIDs = append(commit.SeenIDs, o.ID)
+		if seen[o.ID] {
+			continue
 		}
-		if querySkipped > 0 {
-			fmt.Printf("[%s] 🎯 '%s': отсеяно %d лотов — не совпали с запросом\n",
-				time.Now().Format("15:04:05"), search.Name, querySkipped)
+		fresh++
+		if verdict != Match {
+			if verdict == SkipQuery {
+				queryMisses++
+			}
+			if !silent {
+				logx.Infof("%s", formatAdSkipped(o, verdict, detail))
+			}
+			continue
+		}
+		if silent {
+			continue
+		}
+		logx.Infof("%s", formatAdFound(o, s.Name, ansiLinks))
+
+		payload, err := json.Marshal(o)
+		if err != nil {
+			logx.Errorf("encode listing %d: %v", o.ID, err)
+			continue
+		}
+		for _, chatID := range recipients {
+			commit.Alerts = append(commit.Alerts, store.Reservation{
+				OfferID:    o.ID,
+				ChatID:     chatID,
+				SearchName: s.Name,
+				Title:      textutil.TruncateRunes(textutil.SanitizeListingText(o.Title), 120),
+				URL:        o.URL,
+				Price:      textutil.SanitizeListingText(o.GetPrice()),
+				Payload:    string(payload),
+			})
+		}
+	}
+
+	queued, ok, err := c.db.CommitPage(ctx, commit)
+	if err != nil {
+		if ctx.Err() == nil {
+			logx.Errorf("'%s': store the poll result: %v", s.Name, err)
+		}
+		return
+	}
+	if !ok {
+		// Deleted or paused while its page was on the way: nothing was written.
+		return
+	}
+	if silent {
+		logx.Infof("primed '%s': %d listings on the page, %d new to the cache", s.Name, len(visible), fresh)
+		return
+	}
+	if queryMisses > 0 {
+		logx.Infof("🎯 '%s': %d listings dropped — the query did not match", s.Name, queryMisses)
+	}
+	if len(queued) > 0 {
+		c.wakeSender()
+	}
+}
+
+// recipients returns the chats an alert of this filter goes to: its owner, or
+// every trusted chat for a shared filter. A paused chat gets nothing — the
+// listing is still marked as seen, which is what pausing means — and a chat
+// that turned out to be unreachable is left alone for a while.
+func (c *Checker) recipients(s domain.Search) []string {
+	var chats []string
+	if s.IsShared() {
+		chats = c.cfg.GetTelegramChatIDs()
+	} else if c.cfg.IsTrusted(s.OwnerChatID) {
+		chats = []string{s.OwnerChatID}
+	}
+	out := chats[:0:0]
+	for _, id := range chats {
+		if c.cfg.IsPaused(id) || c.isDead(id) {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+// ---------- reacting to OLX refusing requests ----------
+
+// block pauses all polling after a 403 or 429. Such a refusal is tied to the
+// address, not to one filter, so the other filters would only make it worse.
+func (c *Checker) block(ctx context.Context, cause error) {
+	c.mu.Lock()
+	now := c.now()
+	if now.Before(c.blockedUntil) {
+		c.mu.Unlock()
+		return
+	}
+	c.blockStreak++
+	pause := blockPauseMin << min(c.blockStreak-1, 8)
+	if pause > blockPauseMax || pause <= 0 {
+		pause = blockPauseMax
+	}
+	// ±20 % of jitter.
+	pause = time.Duration(float64(pause) * (0.8 + 0.4*rand.Float64()))
+	c.blockedUntil = now.Add(pause)
+	first := c.blockStreak == 1
+	c.mu.Unlock()
+
+	status := 0
+	var apiErr *olx.APIError
+	if errors.As(cause, &apiErr) {
+		status = apiErr.Status
+	}
+	logx.Errorf("OLX is refusing requests (HTTP %d); polling is paused for %s", status, pause.Round(time.Second))
+	if !first {
+		return
+	}
+	// One notice per episode, to the people who can do something about it.
+	for _, admin := range c.cfg.Admins() {
+		lang := i18n.Of(c.cfg.LangFor(admin))
+		text := i18n.T(lang, "ops.blocked", status, textutil.FormatModerationDelay(pause))
+		if _, err := c.tg.SendHTML(ctx, admin, text, nil, true); err != nil && ctx.Err() == nil {
+			logx.Warnf("notify admin %s: %v", admin, err)
 		}
 	}
 }
 
-func (c *Checker) Client() *olx.OLXClient { return c.client }
+func (c *Checker) noteRequestOK(id string) {
+	c.mu.Lock()
+	delete(c.badRequests, id)
+	c.mu.Unlock()
+}
 
-func (c *Checker) isBackfillDisabled() bool {
-	if c.cfg == nil {
-		return false
+// noteBadRequest counts HTTP 400 answers for a filter and stops the filter
+// once it is clear the request itself is the problem.
+func (c *Checker) noteBadRequest(ctx context.Context, s domain.Search, cause error) {
+	c.mu.Lock()
+	c.badRequests[s.ID]++
+	n := c.badRequests[s.ID]
+	c.mu.Unlock()
+	logx.Warnf("'%s': OLX rejected the request (%d of %d): %v", s.Name, n, maxBadRequests, cause)
+	if n < maxBadRequests {
+		return
 	}
-	return !c.cfg.GetBackfillEnabled()
+
+	if _, err := c.db.UpdateSearch(ctx, s.ID, func(sc *domain.Search) error { sc.Disabled = true; return nil }); err != nil {
+		logx.Errorf("'%s': stop the filter: %v", s.Name, err)
+		return
+	}
+	c.noteRequestOK(s.ID)
+	logx.Errorf("'%s' was stopped: OLX keeps rejecting its request", s.Name)
+
+	notify := c.cfg.Admins()
+	if !s.IsShared() {
+		notify = []string{s.OwnerChatID}
+	}
+	for _, chatID := range notify {
+		lang := i18n.Of(c.cfg.LangFor(chatID))
+		text := i18n.T(lang, "ops.filter_stopped", html.EscapeString(textutil.TruncateRunes(s.Name, 80)))
+		if _, err := c.tg.SendHTML(ctx, chatID, text, nil, false); err != nil && ctx.Err() == nil {
+			logx.Warnf("notify %s: %v", chatID, err)
+		}
+	}
 }

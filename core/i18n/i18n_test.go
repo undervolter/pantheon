@@ -1,6 +1,9 @@
 package i18n
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -53,5 +56,59 @@ func TestTFallsBack(t *testing.T) {
 	}
 	if got := T(UK, "card.price", "100 грн."); got != "Продається за <b>100 грн.</b>" {
 		t.Errorf("formatted = %q", got)
+	}
+}
+
+// Every key of the catalog must be used by the code. A string nobody shows is
+// dead weight at best; at worst it is the text of a feature this edition does
+// not have, carried over by accident.
+func TestEveryKeyIsUsed(t *testing.T) {
+	var src strings.Builder
+	root := filepath.Join("..", "..")
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if name == ".git" || name == "deploy" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || strings.HasPrefix(name, "catalog_") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		src.Write(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := src.String()
+
+	// Keys built at run time: "bc." + command name.
+	dynamic := []string{"bc."}
+	for _, prefix := range dynamic {
+		if !strings.Contains(code, `"`+prefix+`"`) {
+			t.Errorf("prefix %q is declared dynamic but the code does not build keys from it", prefix)
+		}
+	}
+
+	for _, key := range Keys() {
+		if strings.Contains(code, `"`+key+`"`) {
+			continue
+		}
+		used := false
+		for _, prefix := range dynamic {
+			used = used || strings.HasPrefix(key, prefix)
+		}
+		if !used {
+			t.Errorf("key %q is not used anywhere", key)
+		}
 	}
 }
