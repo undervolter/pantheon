@@ -17,7 +17,7 @@ const Banner = `                                __     __
   / /_/ /  / /_/ /  / / / /  / /_   / / / /  /  __/  / /_/ /  / / / /
  / .___/   \__,_/  /_/ /_/   \__/  /_/ /_/   \___/   \____/  /_/ /_/
 /_/
-
+															v0.2.0
   made by undervolter | github.com/undervolter/pantheon
       Want some updates? t.me/pantheonUpdates`
 
